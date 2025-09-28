@@ -9,57 +9,67 @@ use Illuminate\Support\Facades\Hash;
 
 class AuthController extends Controller
 {
-    // register
+    // 🔹 Register
     public function register(Request $request)
     {
         $request->validate([
-            'username' => 'required|string|max:255|unique:users',
-            'email' => 'required|email|unique:users',
-            'password' => 'required|string|min:6',
+            'name' => 'required|string|max:100',
+            'email' => 'required|string|email|unique:users,email',
+            'password' => 'required|string|min:6|confirmed',
         ]);
 
-        $user = User::create([
-            'username' => $request->username,
-            'email'    => $request->email,
-            'password' => Hash::make($request->password),
-        ]);
+        try {
+            User::create([
+                'name' => $request->name,
+                'email' => $request->email,
+                'password' => Hash::make($request->password),
+            ]);
 
-        return response()->json([
-            'message' => 'Register berhasil',
-            'user' => $user,
-        ], 201);
+            return redirect()->route('login')->with('toast', [
+                'type' => 'success',
+                'message' => 'Registrasi berhasil, silakan login!',
+            ]);
+        } catch (\Exception $e) {
+            return redirect()->back()->with('toast', [
+                'type' => 'error',
+                'message' => 'Registrasi gagal, coba lagi.',
+            ]);
+        }
     }
 
-    // login
+    // 🔹 Login
     public function login(Request $request)
     {
-        $request->validate([
-            'username' => 'required',
-            'password' => 'required',
+        $credentials = $request->validate([
+            'email' => 'required|string|email',
+            'password' => 'required|string',
         ]);
 
-        if (!Auth::attempt($request->only('username', 'password'))) {
-            return response()->json([
-                'message' => 'Username atau password salah',
-            ], 401);
+        if (Auth::attempt($credentials)) {
+            $request->session()->regenerate();
+
+            return redirect()->intended('/')->with('toast', [
+                'type' => 'success',
+                'message' => 'Login berhasil, selamat datang!',
+            ]);
         }
 
-        $user = User::where('username', $request->username)->first();
-        $token = $user->createToken('api_token')->plainTextToken;
-
-        return response()->json([
-            'access_token' => $token,
-            'user' => $user,
+        return redirect()->back()->with('toast', [
+            'type' => 'error',
+            'message' => 'Email atau password salah!',
         ]);
     }
 
-    // logout
+    // 🔹 Logout
     public function logout(Request $request)
     {
-        $request->user()->tokens()->delete();
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
 
-        return response()->json([
-            'message' => 'Logout berhasil'
+        return redirect('/login')->with('toast', [
+            'type' => 'success',
+            'message' => 'Logout berhasil!',
         ]);
     }
 }

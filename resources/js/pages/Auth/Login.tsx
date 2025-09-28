@@ -1,21 +1,17 @@
 import React, { useState, useContext, ChangeEvent, FormEvent } from "react";
-// Update the path below to the correct location of AuthContext
 import { AuthContext } from "../../context/AuthContext";
 import axios from "axios";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { useNavigate } from "react-router-dom"
-import { Card } from "@/components/ui/card"
-import { Eye, EyeOff } from "lucide-react"; // 👁️ icon
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
+import { Eye, EyeOff } from "lucide-react";
 
 interface FormData {
   username: string;
   email: string;
   password: string;
 }
-
-
 
 const Login: React.FC = () => {
   const { login, API } = useContext(AuthContext) as {
@@ -45,21 +41,29 @@ const Login: React.FC = () => {
 
     try {
       if (isLogin) {
+        // 🔹 Login
         const response = await axios.post(`${API}/auth/login`, {
           username: formData.username,
           password: formData.password,
         });
 
         login(response.data.access_token, response.data.user);
-        toast.success("Login berhasil!");
+        toast.success("Login berhasil, selamat datang!");
       } else {
+        // 🔹 Register
         await axios.post(`${API}/auth/register`, formData);
         toast.success("Registrasi berhasil! Silakan login.");
         setIsLogin(true);
         setFormData({ username: "", email: "", password: "" });
       }
     } catch (error: any) {
-      toast.error(error.response?.data?.detail || "Terjadi kesalahan");
+      // 🔹 Ambil pesan error dari backend kalau ada
+      const msg =
+        error.response?.data?.message ||
+        error.response?.data?.error ||
+        error.response?.statusText ||
+        "Terjadi kesalahan, coba lagi.";
+      toast.error(msg);
     } finally {
       setLoading(false);
     }
@@ -97,23 +101,23 @@ const Login: React.FC = () => {
         <div className="flex bg-gray-100 rounded-xl p-1 mb-6">
           <button
             type="button"
-            className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all duration-300 ${isLogin
+            className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all duration-300 ${
+              isLogin
                 ? "bg-white text-blue-600 shadow-sm"
                 : "text-gray-500 hover:text-gray-700"
-              }`}
+            }`}
             onClick={() => setIsLogin(true)}
-            data-testid="login-tab"
           >
             Masuk
           </button>
           <button
             type="button"
-            className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all duration-300 ${!isLogin
+            className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all duration-300 ${
+              !isLogin
                 ? "bg-white text-blue-600 shadow-sm"
                 : "text-gray-500 hover:text-gray-700"
-              }`}
+            }`}
             onClick={() => setIsLogin(false)}
-            data-testid="register-tab"
           >
             Daftar
           </button>
