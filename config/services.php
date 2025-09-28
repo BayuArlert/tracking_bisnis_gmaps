@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'gmaps' => [
+        'key' => env('GMAPS_API_KEY'),
+    ],
+
 ];

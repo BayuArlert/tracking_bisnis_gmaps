@@ -26,7 +26,9 @@
         "typescript-eslint": "^8.23.0"
     },
     "dependencies": {
-        "@inertiajs/react": "^2.0.0",
+        "@inertiajs/inertia": "^0.11.1",
+        "@inertiajs/react": "^2.2.1",
+        "@radix-ui/react-select": "^2.2.6",
         "@radix-ui/react-slot": "^1.2.3",
         "@tailwindcss/vite": "^4.1.11",
         "@types/react": "^19.0.3",

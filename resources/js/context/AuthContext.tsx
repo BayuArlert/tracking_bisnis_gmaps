@@ -17,7 +17,7 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType>({
   user: null,
   token: null,
-  API: "http://localhost:8000", // ganti sesuai backend
+  API: "http://localhost:8000/api", // ganti sesuai backend
   login: () => {},
   logout: () => {},
 });
@@ -51,7 +51,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   return (
     <AuthContext.Provider
-      value={{ user, token, API: "http://localhost:8000", login, logout }}
+      value={{ user, token, API: "http://localhost:8000/api", login, logout }}
     >
       {children}
     </AuthContext.Provider>
