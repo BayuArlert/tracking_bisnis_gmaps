@@ -1,6 +1,6 @@
 import React, { useState, useContext, ChangeEvent, FormEvent } from "react";
 import { AuthContext } from "../../context/AuthContext";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,14 +56,18 @@ const Login: React.FC = () => {
         setIsLogin(true);
         setFormData({ username: "", email: "", password: "" });
       }
-    } catch (error: any) {
-      // 🔹 Ambil pesan error dari backend kalau ada
-      const msg =
-        error.response?.data?.message ||
-        error.response?.data?.error ||
-        error.response?.statusText ||
-        "Terjadi kesalahan, coba lagi.";
-      toast.error(msg);
+    } catch (err: unknown) {
+      // Gunakan AxiosError supaya jelas tipenya
+      if (err instanceof AxiosError) {
+        const msg =
+          err.response?.data?.message ||
+          err.response?.data?.error ||
+          err.response?.statusText ||
+          "Terjadi kesalahan, coba lagi.";
+        toast.error(msg);
+      } else {
+        toast.error("Terjadi kesalahan tak terduga.");
+      }
     } finally {
       setLoading(false);
     }
