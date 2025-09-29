@@ -56,29 +56,44 @@ Copy `.env.example` ke `.env` dan konfigurasi:
 cp .env.example .env
 ```
 
-Edit file `.env` dan tambahkan:
+Edit file `.env` dan konfigurasi sesuai kebutuhan:
 
 ```env
-# Google Maps API Key
-REACT_APP_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+# Application
+APP_NAME="Business Monitoring Dashboard"
+APP_ENV=local
+APP_DEBUG=true
+APP_URL=http://localhost:8000
 
 # Database Configuration
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_DATABASE=business_monitoring
-DB_USERNAME=root
-DB_PASSWORD=
+DB_USERNAME=your_db_username
+DB_PASSWORD=your_db_password
+
+# Google Maps API Key
+VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key_here
+
+# Frontend URL (untuk CORS)
+FRONTEND_URL=http://localhost:3000
 
 # Mail Configuration (untuk notifikasi)
 MAIL_MAILER=smtp
-MAIL_HOST=smtp.gmail.com
+MAIL_HOST=your_smtp_host
 MAIL_PORT=587
-MAIL_USERNAME=your_email@gmail.com
+MAIL_USERNAME=your_email
 MAIL_PASSWORD=your_app_password
 MAIL_ENCRYPTION=tls
 MAIL_FROM_ADDRESS="noreply@yourdomain.com"
 MAIL_FROM_NAME="Business Monitoring Dashboard"
+
+# Session & Security
+SESSION_DRIVER=database
+SESSION_LIFETIME=120
+SESSION_ENCRYPT=false
+BCRYPT_ROUNDS=12
 ```
 
 ### 3. Database Setup
@@ -122,8 +137,14 @@ npm run dev
    - Maps JavaScript API
    - Places API
    - Geocoding API
-4. Buat API Key dan restrict untuk domain Anda
-5. Tambahkan API Key ke file `.env`
+4. Buat API Key dan **PENTING**: restrict untuk domain Anda
+5. Tambahkan API Key ke file `.env` sebagai `VITE_GOOGLE_MAPS_API_KEY`
+
+### 🔒 Security Best Practices untuk API Key:
+- Restrict API Key dengan HTTP referrers: `yourdomain.com/*`
+- Set API restrictions hanya untuk Maps JavaScript API dan Places API
+- Jangan commit API Key ke repository
+- Gunakan environment variables
 
 ## Struktur Database
 
@@ -145,27 +166,6 @@ npm run dev
 - timestamps
 ```
 
-## API Endpoints
-
-### Dashboard
-- `GET /api/dashboard/stats` - Statistik dashboard
-
-### Business Management
-- `GET /api/businesses` - List bisnis dengan filter
-- `GET /api/businesses/new` - Fetch data baru dari Google Places
-- `GET /api/businesses/filter-options` - Opsi filter
-- `GET /api/businesses/update-metadata` - Update metadata
-- `GET /api/export/csv` - Export CSV
-
-### Statistics
-- `GET /api/statistics` - Data statistik
-- `GET /api/statistics/heatmap` - Data untuk heatmap
-
-### Notifications
-- `POST /api/notifications/weekly-summary` - Kirim summary mingguan
-- `POST /api/notifications/monthly-summary` - Kirim summary bulanan
-- `POST /api/notifications/schedule` - Schedule notifikasi
-
 ## Kriteria Identifikasi "Bisnis Baru"
 
 Sistem menandai bisnis baru berdasarkan beberapa indikator:
@@ -181,7 +181,7 @@ Sistem menandai bisnis baru berdasarkan beberapa indikator:
 ## Fitur Monitoring
 
 ### Area & Kategori Monitoring
-- Pilih area (Yogyakarta, Sleman, Bantul, dll)
+- Pilih area (Bali, Denpasar, Badung, Gianyar, Ubud, dll)
 - Pilih kategori (resto, hotel, gym, dll)
 - Radius pencarian bisa diatur (1-50 km)
 
@@ -195,6 +195,25 @@ Sistem menandai bisnis baru berdasarkan beberapa indikator:
 - Heatmap lokasi bisnis baru di Google Maps
 - Top 10 bisnis baru dengan review terbanyak bulan ini
 
+## 🔒 Security Features
+
+### Authentication & Authorization
+- Laravel Sanctum untuk API authentication
+- Token-based authentication
+- Rate limiting pada login/register (5 attempts per minute)
+- Password hashing dengan bcrypt (12 rounds)
+
+### API Security
+- CORS protection dengan allowed origins terbatas
+- Input validation pada semua endpoints
+- SQL injection protection dengan Eloquent ORM
+- XSS protection dengan React's built-in sanitization
+
+### Environment Security
+- Environment variables untuk sensitive data
+- API keys tidak di-commit ke repository
+- Debug mode bisa di-disable untuk production
+
 ## Output yang Diharapkan
 
 ✅ **Web Dashboard** dengan login sederhana (admin)
@@ -205,20 +224,14 @@ Sistem menandai bisnis baru berdasarkan beberapa indikator:
 
 ## Teknologi yang Digunakan
 
-- **Backend**: Laravel 11, PHP 8.2+
-- **Frontend**: React 18, TypeScript, Inertia.js
+- **Backend**: Laravel 11, PHP 8.4+
+- **Frontend**: React 19, TypeScript, Inertia.js
 - **UI**: Tailwind CSS, shadcn/ui components
-- **Maps**: Google Maps JavaScript API
+- **Maps**: Google Maps JavaScript API (Advanced Markers)
 - **Database**: MySQL
 - **Build Tool**: Vite
-
-## Kontribusi
-
-1. Fork repository
-2. Buat feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push ke branch (`git push origin feature/AmazingFeature`)
-5. Buat Pull Request
+- **Authentication**: Laravel Sanctum
+- **Testing**: PHPUnit
 
 ## License
 
