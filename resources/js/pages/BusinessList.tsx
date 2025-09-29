@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState, useEffect, useContext, ChangeEvent } from "react";
+import { useState, useEffect, useContext, ChangeEvent, useCallback } from "react";
 import { AuthContext } from "../context/AuthContext";
 import axios from "axios";
 import toast from "react-hot-toast";
@@ -14,7 +14,6 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import Layout from "../components/Layout";
-import { router } from '@inertiajs/react';
 
 // ==== Types ====
 interface Business {
@@ -101,16 +100,7 @@ const BusinessList = () => {
     categories: [],
   });
 
-  useEffect(() => {
-    fetchFilterOptions();
-  }, []);
-
-  useEffect(() => {
-    fetchBusinesses();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters]);
-
-  const fetchFilterOptions = async () => {
+  const fetchFilterOptions = useCallback(async () => {
     try {
       const response = await axios.get<{
         areas: string[];
@@ -120,7 +110,16 @@ const BusinessList = () => {
     } catch (error) {
       console.error("Error fetching filter options:", error);
     }
-  };
+  }, [API]);
+
+  useEffect(() => {
+    fetchFilterOptions();
+  }, [fetchFilterOptions]);
+
+  useEffect(() => {
+    fetchBusinesses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters]);
 
   const fetchBusinesses = async (reset: boolean = true) => {
     try {
@@ -232,7 +231,7 @@ const BusinessList = () => {
     return clean;
   };
 
-  const getBusinessAgeLabel = (metadata: any) => {
+  const getBusinessAgeLabel = (metadata: { business_age_estimate?: string }) => {
     if (!metadata) return '';
     
     switch (metadata.business_age_estimate) {

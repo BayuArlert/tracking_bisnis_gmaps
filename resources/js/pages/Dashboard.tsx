@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from "react";
+import React, { useState, useEffect, useContext, useCallback } from "react";
 import { AuthContext } from "../context/AuthContext";
 import axios from "axios";
 import toast from "react-hot-toast";
@@ -53,19 +53,17 @@ const Dashboard: React.FC = () => {
   const [notificationFrequency, setNotificationFrequency] = useState<'weekly' | 'monthly'>('weekly');
   const [sendingNotification, setSendingNotification] = useState<boolean>(false);
 
-  useEffect(() => {
-    fetchDashboardStats();
-  }, []);
-
-  const fetchDashboardStats = async (): Promise<void> => {
+  const fetchDashboardStats = useCallback(async (): Promise<void> => {
     try {
       setLoading(true);
       const response = await axios.get<DashboardStats>(`${API}/dashboard/stats`);
       setStats(response.data);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error fetching stats:', error);
       // If no data exists, offer to initialize
-      if (error.response?.status === 500) {
+      if (error && typeof error === 'object' && 'response' in error && 
+          error.response && typeof error.response === 'object' && 'status' in error.response &&
+          error.response.status === 500) {
         setStats(null);
       } else {
         toast.error("Gagal memuat data dashboard");
@@ -73,8 +71,11 @@ const Dashboard: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [API]);
 
+  useEffect(() => {
+    fetchDashboardStats();
+  }, [fetchDashboardStats]);
 
   const sendNotification = async (type: 'weekly' | 'monthly'): Promise<void> => {
     if (!notificationEmail) {
@@ -88,9 +89,10 @@ const Dashboard: React.FC = () => {
         ? `${API}/notifications/weekly-summary`
         : `${API}/notifications/monthly-summary`;
       
-      const response = await axios.post(endpoint, { email: notificationEmail });
+      await axios.post(endpoint, { email: notificationEmail });
       toast.success(`${type === 'weekly' ? 'Weekly' : 'Monthly'} summary sent successfully!`);
     } catch (error) {
+      console.error(`Failed to send ${type} summary:`, error);
       toast.error(`Failed to send ${type} summary`);
     } finally {
       setSendingNotification(false);
@@ -111,6 +113,7 @@ const Dashboard: React.FC = () => {
       });
       toast.success(`Notifications scheduled for ${notificationFrequency} delivery`);
     } catch (error) {
+      console.error("Failed to schedule notifications:", error);
       toast.error("Failed to schedule notifications");
     } finally {
       setSendingNotification(false);

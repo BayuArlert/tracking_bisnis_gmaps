@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useContext } from "react";
+import React, { useState, useEffect, useContext, useCallback } from "react";
 import { AuthContext } from "../context/AuthContext";
 import axios from "axios";
 import toast from "react-hot-toast";
@@ -13,7 +13,6 @@ import {
 } from "../components/ui/select";
 import Layout from "../components/Layout";
 import GoogleMapsHeatmap from "../components/GoogleMapsHeatmap";
-import { router } from '@inertiajs/react';
 
 // Type definitions
 interface TrendData {
@@ -31,7 +30,13 @@ interface TopBusiness {
   rating: number;
   review_count: number;
   first_seen: string;
-  indicators?: any;
+  indicators?: {
+    recently_opened?: boolean;
+    review_spike?: boolean;
+    few_reviews?: boolean;
+    has_recent_photo?: boolean;
+    new_business_confidence?: number;
+  };
 }
 
 interface StatisticsData {
@@ -73,16 +78,7 @@ const Statistics: React.FC = () => {
     categories: [],
   });
 
-  useEffect(() => {
-    fetchFilterOptions();
-  }, []);
-
-  useEffect(() => {
-    fetchStatistics();
-    fetchHeatmapData();
-  }, [selectedPeriod, selectedCategory, selectedArea]);
-
-  const fetchFilterOptions = async () => {
+  const fetchFilterOptions = useCallback(async () => {
     try {
       const response = await axios.get<{
         areas: string[];
@@ -92,9 +88,13 @@ const Statistics: React.FC = () => {
     } catch (error) {
       console.error("Error fetching filter options:", error);
     }
-  };
+  }, [API]);
 
-  const fetchStatistics = async (): Promise<void> => {
+  useEffect(() => {
+    fetchFilterOptions();
+  }, [fetchFilterOptions]);
+
+  const fetchStatistics = useCallback(async (): Promise<void> => {
     try {
       setLoading(true);
       const params = new URLSearchParams({
@@ -105,15 +105,15 @@ const Statistics: React.FC = () => {
 
       const response = await axios.get<StatisticsData>(`${API}/statistics?${params}`);
       setStats(response.data);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error fetching statistics:', error);
       toast.error("Gagal memuat data statistik");
     } finally {
       setLoading(false);
     }
-  };
+  }, [API, selectedPeriod, selectedCategory, selectedArea]);
 
-  const fetchHeatmapData = async (): Promise<void> => {
+  const fetchHeatmapData = useCallback(async (): Promise<void> => {
     try {
       setHeatmapLoading(true);
       const params = new URLSearchParams({
@@ -124,13 +124,18 @@ const Statistics: React.FC = () => {
 
       const response = await axios.get<{ businesses: HeatmapBusiness[] }>(`${API}/statistics/heatmap?${params}`);
       setHeatmapData(response.data.businesses);
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Error fetching heatmap data:', error);
       toast.error("Gagal memuat data heatmap");
     } finally {
       setHeatmapLoading(false);
     }
-  };
+  }, [API, selectedPeriod, selectedCategory, selectedArea]);
+
+  useEffect(() => {
+    fetchStatistics();
+    fetchHeatmapData();
+  }, [fetchStatistics, fetchHeatmapData]);
 
   const StatCard: React.FC<{ title: string; value: string | number; icon: React.ReactNode; color: string; growth?: number }> = ({ title, value, icon, color, growth }) => (
     <Card className="p-6 bg-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 rounded-2xl">

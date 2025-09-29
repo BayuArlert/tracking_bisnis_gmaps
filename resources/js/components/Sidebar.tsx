@@ -18,7 +18,7 @@ const Navbar: React.FC = () => {
     };
 
     // Get current URL from Inertia
-    const { url } = usePage() as any;
+    const { url } = usePage() as { url: string };
 
     const navItems: NavItem[] = [
         {
@@ -129,7 +129,7 @@ const Navbar: React.FC = () => {
                         "text-gray-700 hover:bg-gradient-to-r hover:from-blue-50 hover:to-purple-50 hover:text-gray-900 hover:shadow-md hover:border-l-4 hover:border-blue-500";
 
                     const icon = React.isValidElement(item.icon)
-                        ? React.cloneElement(item.icon as React.ReactElement<any>, {
+                        ? React.cloneElement(item.icon as React.ReactElement<{ className?: string }>, {
                               className: `w-4 h-4 transition-colors ${isActive ? "text-white" : "text-gray-600"}`,
                           })
                         : item.icon;

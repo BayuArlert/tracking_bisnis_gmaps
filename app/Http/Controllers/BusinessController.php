@@ -275,6 +275,7 @@ class BusinessController extends Controller
     {
         $request->validate([
             'radius' => 'nullable|integer|min:100|max:50000',
+            'area' => 'nullable|string|max:100|regex:/^[a-zA-Z\s]+$/',
         ]);
 
         $areas = [

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 
 interface Business {
   lat: number;
@@ -19,8 +19,9 @@ interface HeatmapProps {
 
 declare global {
   interface Window {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     google: any;
-    initMap: () => void;
+    initGoogleMaps: () => void;
   }
 }
 
@@ -31,8 +32,11 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
   height = "400px"
 }) => {
   const mapRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapInstance = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const heatmapInstance = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const markersRef = useRef<any[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
 
@@ -45,7 +49,11 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
       }
 
       const script = document.createElement('script');
-      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyB3neQv5EcBET42Wd23V-wDKCFSqPUTWso';
+      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+      if (!apiKey) {
+        console.error('Google Maps API key not configured. Please set VITE_GOOGLE_MAPS_API_KEY in your .env file');
+        return;
+      }
       script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=marker,geometry&loading=async&callback=initGoogleMaps`;
       script.async = true;
       script.defer = true;
@@ -55,7 +63,7 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
       };
       
       // Set global callback
-      (window as any).initGoogleMaps = () => {
+      (window as unknown as { initGoogleMaps: () => void }).initGoogleMaps = () => {
         if (window.google && window.google.maps && window.google.maps.MapTypeId) {
           setIsLoaded(true);
         } else {
@@ -70,13 +78,7 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
     loadGoogleMaps();
   }, []);
 
-  useEffect(() => {
-    if (isLoaded && mapRef.current && businesses.length > 0) {
-      initializeMap();
-    }
-  }, [isLoaded, businesses]);
-
-  const initializeMap = () => {
+  const initializeMap = useCallback(() => {
     if (!mapRef.current || !window.google || !window.google.maps || !window.google.maps.MapTypeId) {
       console.error('Google Maps API not fully loaded');
       return;
@@ -84,6 +86,7 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
 
     try {
       // Initialize map - try with mapId first, fallback to regular map with styles
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mapOptions: any = {
         center: center,
         zoom: zoom,
@@ -217,6 +220,7 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
     // Store circles for toggling
     heatmapInstance.current = {
       circles: densityCircles,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       setMap: (map: any) => {
         densityCircles.forEach(circle => circle.setMap(map));
       },
@@ -225,7 +229,13 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
     } catch (error) {
       console.error('Error initializing map:', error);
     }
-  };
+  }, [center, zoom, businesses]);
+
+  useEffect(() => {
+    if (isLoaded && mapRef.current && businesses.length > 0) {
+      initializeMap();
+    }
+  }, [isLoaded, businesses, initializeMap]);
 
   const getMarkerIcon = (category: string): string => {
     const iconMap: { [key: string]: string } = {
