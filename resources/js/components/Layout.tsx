@@ -13,7 +13,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
             <Navbar />
 
             {/* Main content with left margin to compensate for fixed sidebar */}
-            <main className="flex-1 bg-gray-50 ml-64">
+            <main className="flex-1 bg-gray-50 ml-56">
                 {children}
             </main>
         </div>

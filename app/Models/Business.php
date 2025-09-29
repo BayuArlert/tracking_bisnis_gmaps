@@ -19,6 +19,7 @@ class Business extends Model
         'first_seen',
         'last_fetched',
         'indicators',
+        'google_maps_url',
     ];
 
     protected $casts = [

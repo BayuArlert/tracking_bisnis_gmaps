@@ -12,6 +12,7 @@ class BusinessController extends Controller
     {
         $query = Business::query();
 
+
         // Apply filters
         if ($request->has('area') && $request->area !== 'all' && $request->area !== '') {
             // Find original area names that match the clean area
@@ -29,16 +30,24 @@ class BusinessController extends Controller
             $this->applyDataAgeFilter($query, $request->data_age);
         }
 
+        // Apply radius filter if explicitly requested
+        if ($request->has('use_radius') && $request->use_radius == 'true' 
+            && $request->has('radius') && $request->has('center_lat') && $request->has('center_lng')) {
+            $this->applyRadiusFilter($query, $request->center_lat, $request->center_lng, $request->radius);
+        }
+
         // Apply pagination
         $skip = $request->get('skip', 0);
         $limit = $request->get('limit', 20);
 
         $businesses = $query->latest('first_seen')->skip($skip)->take($limit)->get();
 
+
         return response()->json([
             'data' => $businesses,
         ]);
     }
+
 
     public function getFilterOptions()
     {
@@ -210,6 +219,20 @@ class BusinessController extends Controller
         }
     }
 
+    private function applyRadiusFilter($query, $centerLat, $centerLng, $radius)
+    {
+        // Use Haversine formula to calculate distance
+        $query->selectRaw("*, 
+            (6371 * acos(cos(radians(?)) 
+            * cos(radians(lat)) 
+            * cos(radians(lng) - radians(?)) 
+            + sin(radians(?)) 
+            * sin(radians(lat)))) AS distance", 
+            [$centerLat, $centerLng, $centerLat])
+            ->having('distance', '<=', $radius / 1000) // Convert meters to kilometers
+            ->orderBy('distance');
+    }
+
     public function exportCSV()
     {
         $businesses = Business::all();
@@ -238,9 +261,14 @@ class BusinessController extends Controller
             );
         }
         
-        return response()->json([
-            'csv_data' => $csvData,
-        ]);
+        $filename = 'businesses_export_' . date('Y-m-d_H-i-s') . '.csv';
+        
+        return response($csvData)
+            ->header('Content-Type', 'text/csv')
+            ->header('Content-Disposition', 'attachment; filename="' . $filename . '"')
+            ->header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            ->header('Pragma', 'no-cache')
+            ->header('Expires', '0');
     }
 
     public function fetchNew(Request $request)
@@ -273,19 +301,75 @@ class BusinessController extends Controller
             $url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
                 . "?location={$lat},{$lng}&radius={$radius}&key={$key}";
 
-            $places = Http::withOptions(['verify' => false])->get($url)->json();
+            try {
+                $response = Http::withOptions(['verify' => false])
+                    ->timeout(30)
+                    ->get($url);
+                
+                if (!$response->successful()) {
+                    \Log::warning("Google Places API error for area {$areaName}: " . $response->status());
+                    continue;
+                }
+                
+                $places = $response->json();
+                
+                if (isset($places['error_message'])) {
+                    \Log::error("Google Places API error: " . $places['error_message']);
+                    continue;
+                }
+                
+            } catch (\Exception $e) {
+                \Log::error("Failed to fetch places for area {$areaName}: " . $e->getMessage());
+                continue;
+            }
 
             foreach ($places['results'] ?? [] as $place) {
                 $detailUrl = "https://maps.googleapis.com/maps/api/place/details/json"
                     . "?place_id={$place['place_id']}&fields=name,rating,user_ratings_total,types,"
                     . "formatted_address,geometry,business_status,photos,reviews&key={$key}";
 
-                $detail = Http::withOptions(['verify' => false])->get($detailUrl)->json();
-                $info = $detail['result'] ?? null;
-                if (!$info) continue;
+                try {
+                    $detailResponse = Http::withOptions(['verify' => false])
+                        ->timeout(30)
+                        ->get($detailUrl);
+                    
+                    if (!$detailResponse->successful()) {
+                        \Log::warning("Google Places Details API error for place {$place['place_id']}: " . $detailResponse->status());
+                        continue;
+                    }
+                    
+                    $detail = $detailResponse->json();
+                    
+                    if (isset($detail['error_message'])) {
+                        \Log::error("Google Places Details API error: " . $detail['error_message']);
+                        continue;
+                    }
+                    
+                    $info = $detail['result'] ?? null;
+                    if (!$info) continue;
+                    
+                } catch (\Exception $e) {
+                    \Log::error("Failed to fetch details for place {$place['place_id']}: " . $e->getMessage());
+                    continue;
+                }
 
-                $business = Business::firstOrNew(['place_id' => $place['place_id']]);
-                $isNew = false;
+                // Validasi data sebelum diproses
+                $validationErrors = $this->validateBusinessData($info);
+                if (!empty($validationErrors)) {
+                    \Log::warning("Data validation failed for place {$place['place_id']}: " . implode(', ', $validationErrors));
+                    continue;
+                }
+
+                // Cek duplikasi sebelum membuat record baru
+                $duplicateBusiness = $this->checkForDuplicates($info);
+                if ($duplicateBusiness && $duplicateBusiness->place_id !== $place['place_id']) {
+                    \Log::info("Duplicate business detected: {$info['name']} - merging with existing record");
+                    $business = $duplicateBusiness;
+                    $isNew = false;
+                } else {
+                    $business = Business::firstOrNew(['place_id' => $place['place_id']]);
+                    $isNew = false;
+                }
 
                 if (!$business->exists) {
                     $business->first_seen = now();
@@ -296,17 +380,21 @@ class BusinessController extends Controller
 
                 $address = $info['formatted_address'] ?? '';
 
+                $lat = $info['geometry']['location']['lat'] ?? null;
+                $lng = $info['geometry']['location']['lng'] ?? null;
+                
                 $business->fill([
                     'name' => $info['name'],
                     'category' => $info['types'][0] ?? null, // kategori utama otomatis
                     'address' => $address,
                     'area' => $this->extractAreaFromAddress($address),
-                    'lat' => $info['geometry']['location']['lat'] ?? null,
-                    'lng' => $info['geometry']['location']['lng'] ?? null,
+                    'lat' => $lat,
+                    'lng' => $lng,
                     'rating' => $info['rating'] ?? null,
                     'review_count' => $info['user_ratings_total'] ?? 0,
                     'last_fetched' => now(),
                     'indicators' => $indicators,
+                    'google_maps_url' => $lat && $lng ? "https://www.google.com/maps/search/?api=1&query=" . urlencode($info['name'] . ', ' . $address) : null,
                 ]);
                 $business->save();
 
@@ -537,6 +625,14 @@ class BusinessController extends Controller
             return true;
         }
 
+        // Fallback: Jika business_status tidak tersedia atau tidak valid
+        if (empty($businessStatus) || !in_array($businessStatus, ['OPERATIONAL', 'CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY', 'OPENED_RECENTLY'])) {
+            // Gunakan metadata analysis sebagai fallback
+            if (in_array($metadataAnalysis['business_age_estimate'], ['ultra_new', 'very_new', 'new'])) {
+                return true;
+            }
+        }
+
         // Jika review pertama < 3 bulan, kemungkinan baru
         if (in_array($metadataAnalysis['business_age_estimate'], ['ultra_new', 'very_new', 'new'])) {
             return true;
@@ -713,5 +809,134 @@ class BusinessController extends Controller
         // Untuk saat ini, kita anggap bisnis yang punya foto adalah yang lebih aktif
         // Di masa depan bisa diintegrasikan dengan Google Photos API untuk cek tanggal
         return count($photos) > 0;
+    }
+
+    /**
+     * Validasi data bisnis sebelum disimpan
+     */
+    private function validateBusinessData($info): array
+    {
+        $errors = [];
+        
+        // Validasi field wajib
+        if (empty($info['name'])) {
+            $errors[] = 'Business name is required';
+        }
+        
+        if (empty($info['formatted_address'])) {
+            $errors[] = 'Address is required';
+        }
+        
+        if (empty($info['place_id'])) {
+            $errors[] = 'Place ID is required';
+        }
+        
+        // Validasi koordinat
+        if (!isset($info['geometry']['location']['lat']) || !isset($info['geometry']['location']['lng'])) {
+            $errors[] = 'Valid coordinates are required';
+        } else {
+            $lat = $info['geometry']['location']['lat'];
+            $lng = $info['geometry']['location']['lng'];
+            
+            if ($lat < -90 || $lat > 90) {
+                $errors[] = 'Invalid latitude value';
+            }
+            
+            if ($lng < -180 || $lng > 180) {
+                $errors[] = 'Invalid longitude value';
+            }
+        }
+        
+        // Validasi rating jika ada
+        if (isset($info['rating']) && ($info['rating'] < 1 || $info['rating'] > 5)) {
+            $errors[] = 'Invalid rating value (must be 1-5)';
+        }
+        
+        // Validasi review count jika ada
+        if (isset($info['user_ratings_total']) && $info['user_ratings_total'] < 0) {
+            $errors[] = 'Invalid review count (cannot be negative)';
+        }
+        
+        // Validasi panjang nama bisnis
+        if (strlen($info['name'] ?? '') > 255) {
+            $errors[] = 'Business name is too long (max 255 characters)';
+        }
+        
+        // Validasi panjang alamat
+        if (strlen($info['formatted_address'] ?? '') > 1000) {
+            $errors[] = 'Address is too long (max 1000 characters)';
+        }
+        
+        return $errors;
+    }
+
+    /**
+     * Cek duplikasi data berdasarkan kriteria tertentu
+     */
+    private function checkForDuplicates($info): ?Business
+    {
+        $name = $info['name'] ?? '';
+        $address = $info['formatted_address'] ?? '';
+        $lat = $info['geometry']['location']['lat'] ?? null;
+        $lng = $info['geometry']['location']['lng'] ?? null;
+        
+        // Cek duplikasi berdasarkan nama yang sangat mirip (fuzzy matching)
+        $existingBusiness = Business::where('name', 'LIKE', '%' . substr($name, 0, 20) . '%')
+            ->first();
+            
+        if ($existingBusiness) {
+            // Cek apakah alamat juga mirip
+            $addressSimilarity = $this->calculateStringSimilarity($address, $existingBusiness->address);
+            if ($addressSimilarity > 0.7) { // 70% similarity
+                return $existingBusiness;
+            }
+        }
+        
+        // Cek duplikasi berdasarkan koordinat yang sangat dekat (dalam 50 meter)
+        if ($lat && $lng) {
+            $existingBusinesses = Business::whereNotNull('lat')
+                ->whereNotNull('lng')
+                ->get();
+                
+            foreach ($existingBusinesses as $business) {
+                $distance = $this->calculateDistance($lat, $lng, $business->lat, $business->lng);
+                if ($distance < 0.05) { // 50 meter = 0.05 km
+                    return $business;
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Hitung jarak antara dua koordinat (Haversine formula)
+     */
+    private function calculateDistance($lat1, $lng1, $lat2, $lng2): float
+    {
+        $earthRadius = 6371; // Radius bumi dalam kilometer
+        
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLng = deg2rad($lng2 - $lng1);
+        
+        $a = sin($dLat/2) * sin($dLat/2) + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLng/2) * sin($dLng/2);
+        $c = 2 * atan2(sqrt($a), sqrt(1-$a));
+        
+        return $earthRadius * $c;
+    }
+
+    /**
+     * Hitung similarity antara dua string (Levenshtein distance)
+     */
+    private function calculateStringSimilarity($str1, $str2): float
+    {
+        if (empty($str1) || empty($str2)) {
+            return 0;
+        }
+        
+        $maxLength = max(strlen($str1), strlen($str2));
+        $distance = levenshtein(strtolower($str1), strtolower($str2));
+        
+        return 1 - ($distance / $maxLength);
     }
 }

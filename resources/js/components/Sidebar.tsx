@@ -62,8 +62,8 @@ const Navbar: React.FC = () => {
             ),
         },
         {
-            path: "/analytics",
-            name: "Analytics",
+            path: "/statistics",
+            name: "Statistics",
             icon: (
                 <svg
                     className="w-5 h-5"
@@ -176,9 +176,11 @@ const Navbar: React.FC = () => {
                     </div>
                     <div className="flex-1 min-w-0">
                         <p className="text-xs font-semibold text-gray-800 truncate">
-                            {user?.username || "Admin"}
+                            {user?.username || "Loading..."}
                         </p>
-                        <p className="text-xs text-gray-500">Administrator</p>
+                        <p className="text-xs text-gray-500">
+                            {user?.email ? user.email.split('@')[0] : "Administrator"}
+                        </p>
                     </div>
                 </div>
 

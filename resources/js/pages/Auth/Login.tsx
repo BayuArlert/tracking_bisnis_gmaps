@@ -1,7 +1,7 @@
 import React, { useState, useContext, ChangeEvent, FormEvent } from "react";
 import { AuthContext } from "../../context/AuthContext";
 import axios, { AxiosError } from "axios";
-import { toast } from "sonner";
+import toast from "react-hot-toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
@@ -27,12 +27,21 @@ const Login: React.FC = () => {
   });
   const [loading, setLoading] = useState<boolean>(false);
   const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [formErrors, setFormErrors] = useState<{[key: string]: string}>({});
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
     });
+    
+    // Clear error for this field when user starts typing
+    if (formErrors[e.target.name]) {
+      setFormErrors({
+        ...formErrors,
+        [e.target.name]: ''
+      });
+    }
   };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -40,33 +49,112 @@ const Login: React.FC = () => {
     setLoading(true);
 
     try {
-      if (isLogin) {
-        // 🔹 Login
-        const response = await axios.post(`${API}/auth/login`, {
-          username: formData.username,
-          password: formData.password,
-        });
-
-        login(response.data.access_token, response.data.user);
-        toast.success("Login berhasil, selamat datang!");
-      } else {
-        // 🔹 Register
-        await axios.post(`${API}/auth/register`, formData);
-        toast.success("Registrasi berhasil! Silakan login.");
-        setIsLogin(true);
-        setFormData({ username: "", email: "", password: "" });
-      }
+        if (isLogin) {
+          // 🔹 Login
+          const response = await axios.post(`${API}/auth/login`, {
+            username: formData.username,
+            password: formData.password,
+          }, {
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            }
+          });
+          
+          if (response.data.success) {
+            login(response.data.access_token, response.data.user);
+            toast.success(`🎉 Login berhasil! Selamat datang, ${response.data.user.username}!`);
+            // Redirect to dashboard
+            setTimeout(() => {
+              window.location.href = '/dashboard';
+            }, 2000);
+          } else {
+            toast.error("Login gagal, coba lagi");
+          }
+        } else {
+          // 🔹 Register
+          // Ensure all required fields are present
+          const registrationData = {
+            username: formData.username.trim(),
+            email: formData.email.trim(),
+            password: formData.password
+          };
+          
+          const response = await axios.post(`${API}/auth/register`, registrationData, {
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            }
+          });
+          
+          if (response.data.success) {
+            login(response.data.access_token, response.data.user);
+            toast.success("🎉 Registrasi berhasil! Selamat datang!");
+            
+            // Auto-switch to login tab after successful registration
+            setTimeout(() => {
+              setIsLogin(true);
+              setFormData({ username: "", email: "", password: "" });
+              toast.success("✨ Silakan login dengan akun yang baru dibuat");
+            }, 1500);
+            
+            // Redirect to dashboard after a short delay
+            setTimeout(() => {
+              window.location.href = '/dashboard';
+            }, 3000);
+          } else {
+            toast.error("Registrasi gagal, coba lagi");
+          }
+        }
     } catch (err: unknown) {
       // Gunakan AxiosError supaya jelas tipenya
       if (err instanceof AxiosError) {
-        const msg =
-          err.response?.data?.message ||
-          err.response?.data?.error ||
-          err.response?.statusText ||
-          "Terjadi kesalahan, coba lagi.";
-        toast.error(msg);
+        
+        // Handle validation errors (422)
+        if (err.response?.status === 422) {
+          const errors = err.response?.data?.errors;
+          const message = err.response?.data?.message;
+          
+          if (errors) {
+            // Set form errors for visual feedback
+            const newErrors: {[key: string]: string} = {};
+            Object.keys(errors).forEach(field => {
+              const fieldName = field === 'username' ? 'Username' : 
+                               field === 'email' ? 'Email' : 
+                               field === 'password' ? 'Password' : field;
+              newErrors[field] = errors[field][0];
+              toast.error(`${fieldName}: ${errors[field][0]}`);
+            });
+            setFormErrors(newErrors);
+          } else if (message) {
+            // Handle specific messages like "username already taken"
+            if (message.includes('username has already been taken')) {
+              toast.error('Username sudah digunakan, coba username lain');
+            } else if (message.includes('email has already been taken')) {
+              toast.error('Email sudah digunakan, coba email lain');
+            } else {
+              toast.error(`${message}`);
+            }
+          } else {
+            toast.error("Data tidak valid");
+          }
+        } else {
+          // Handle login/registration errors
+          if (err.response?.status === 401) {
+            toast.error("Login gagal, coba lagi");
+          } else if (err.response?.status === 500) {
+            toast.error("Registrasi gagal, coba lagi");
+          } else {
+            const msg =
+              err.response?.data?.message ||
+              err.response?.data?.error ||
+              err.response?.statusText ||
+              "Terjadi kesalahan, coba lagi.";
+            toast.error(`${msg}`);
+          }
+        }
       } else {
-        toast.error("Terjadi kesalahan tak terduga.");
+        toast.error("Terjadi kesalahan tak terduga");
       }
     } finally {
       setLoading(false);
@@ -110,7 +198,11 @@ const Login: React.FC = () => {
                 ? "bg-white text-blue-600 shadow-sm"
                 : "text-gray-500 hover:text-gray-700"
             }`}
-            onClick={() => setIsLogin(true)}
+            onClick={() => {
+              setIsLogin(true);
+              setFormData({ username: "", email: "", password: "" });
+              setFormErrors({});
+            }}
           >
             Masuk
           </button>
@@ -121,7 +213,11 @@ const Login: React.FC = () => {
                 ? "bg-white text-blue-600 shadow-sm"
                 : "text-gray-500 hover:text-gray-700"
             }`}
-            onClick={() => setIsLogin(false)}
+            onClick={() => {
+              setIsLogin(false);
+              setFormData({ username: "", email: "", password: "" });
+              setFormErrors({});
+            }}
           >
             Daftar
           </button>
@@ -139,8 +235,13 @@ const Login: React.FC = () => {
               onChange={handleChange}
               placeholder="Masukkan username"
               required
-              className="h-12 border-gray-200 focus:border-blue-400 focus:ring-blue-400"
+              className={`h-12 border-gray-200 focus:border-blue-400 focus:ring-blue-400 ${
+                formErrors.username ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''
+              }`}
             />
+            {formErrors.username && (
+              <p className="text-red-500 text-xs mt-1">{formErrors.username}</p>
+            )}
           </div>
 
           {/* Email (hanya untuk register) */}
@@ -153,9 +254,14 @@ const Login: React.FC = () => {
                 value={formData.email}
                 onChange={handleChange}
                 placeholder="Masukkan email"
-                required
-                className="h-12 border-gray-200 focus:border-blue-400 focus:ring-blue-400"
+                required={!isLogin}
+                className={`h-12 border-gray-200 focus:border-blue-400 focus:ring-blue-400 ${
+                  formErrors.email ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''
+                }`}
               />
+              {formErrors.email && (
+                <p className="text-red-500 text-xs mt-1">{formErrors.email}</p>
+              )}
             </div>
           )}
 
@@ -170,7 +276,9 @@ const Login: React.FC = () => {
                 onChange={handleChange}
                 placeholder="Masukkan password"
                 required
-                className="h-12 border-gray-200 focus:border-blue-400 focus:ring-blue-400 pr-10"
+                className={`h-12 border-gray-200 focus:border-blue-400 focus:ring-blue-400 pr-10 ${
+                  formErrors.password ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''
+                }`}
               />
               <button
                 type="button"
@@ -180,18 +288,21 @@ const Login: React.FC = () => {
                 {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
               </button>
             </div>
+            {formErrors.password && (
+              <p className="text-red-500 text-xs mt-1">{formErrors.password}</p>
+            )}
           </div>
 
           {/* Submit */}
           <Button
             type="submit"
             disabled={loading}
-            className="w-full h-12 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-0.5"
+            className="w-full h-12 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white font-medium rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
               <div className="flex items-center space-x-2">
                 <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                <span>Loading...</span>
+                <span>{isLogin ? "Memproses login..." : "Memproses registrasi..."}</span>
               </div>
             ) : isLogin ? (
               "Masuk"
@@ -200,6 +311,7 @@ const Login: React.FC = () => {
             )}
           </Button>
         </form>
+        
       </Card>
     </div>
   );

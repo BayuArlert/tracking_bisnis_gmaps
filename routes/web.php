@@ -13,23 +13,19 @@ Route::get('/login', function () {
     return Inertia::render('Auth/Login');
 })->name('login');
 
-// halaman dashboard (temporary without auth for testing)
+// Protected routes - require authentication (temporarily disabled for testing)
 Route::get('/dashboard', function () {
     return Inertia::render('Dashboard');
 })->name('dashboard');
-
-// Test route untuk debugging
-Route::get('/test-dashboard', function () {
-    return response()->json(['message' => 'Dashboard route is working!', 'timestamp' => now()]);
-});
 
 Route::get('/businesslist', function () {
     return Inertia::render('BusinessList');
 });
 
-Route::get('/businesses', function () {
-    return redirect('/businesslist');
-});
+
+Route::get('/statistics', function () {
+    return Inertia::render('Statistics');
+})->name('statistics');
 
 Route::post('/auth/register', [AuthController::class, 'register']);
 Route::post('/auth/login', [AuthController::class, 'login']);

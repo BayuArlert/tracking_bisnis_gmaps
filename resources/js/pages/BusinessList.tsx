@@ -2,7 +2,7 @@ import * as React from "react";
 import { useState, useEffect, useContext, ChangeEvent } from "react";
 import { AuthContext } from "../context/AuthContext";
 import axios from "axios";
-import { toast } from "sonner";
+import toast from "react-hot-toast";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -14,6 +14,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import Layout from "../components/Layout";
+import { router } from '@inertiajs/react';
 
 // ==== Types ====
 interface Business {
@@ -67,6 +68,9 @@ interface Filters {
   area: string;
   category: string;
   data_age: string;
+  radius: number;
+  center_lat?: number;
+  center_lng?: number;
 }
 
 // ==== Component ====
@@ -78,7 +82,11 @@ const BusinessList = () => {
     area: "",
     category: "",
     data_age: "",
+    radius: 5000, // Default 5km radius
+    center_lat: -8.6500, // Bali center
+    center_lng: 115.2167,
   });
+  const [useRadiusFilter, setUseRadiusFilter] = useState<boolean>(false);
   const [searchTerm, setSearchTerm] = useState<string>("");
   const [pagination, setPagination] = useState<Pagination>({
     page: 0,
@@ -127,6 +135,12 @@ const BusinessList = () => {
         params.append("category", filters.category);
       if (filters.data_age && filters.data_age !== "all")
         params.append("data_age", filters.data_age);
+      if (useRadiusFilter) {
+        params.append("use_radius", "true");
+        params.append("radius", filters.radius.toString());
+        if (filters.center_lat !== undefined) params.append("center_lat", filters.center_lat.toString());
+        if (filters.center_lng !== undefined) params.append("center_lng", filters.center_lng.toString());
+      }
 
       console.log('API URL:', `${API}/businesses?${params}`);
       const response = await axios.get<ApiResponse>(`${API}/businesses?${params}`);
@@ -167,7 +181,7 @@ const BusinessList = () => {
 
   const fetchNewData = async () => {
     try {
-      toast.info("Mengambil data baru dari Google Maps...");
+      toast("Mengambil data baru dari Google Maps...");
       const response = await axios.get(`${API}/businesses/new`);
       const { fetched, new: newCount } = response.data;
       
@@ -181,41 +195,11 @@ const BusinessList = () => {
     }
   };
 
-  const updateMetadata = async () => {
-    try {
-      toast.info("Memperbarui metadata...");
-      const response = await axios.get(`${API}/businesses/update-metadata`);
-      const { message, updated, total_processed } = response.data;
-      
-      toast.success(`${message}. Total diproses: ${total_processed}`);
-      
-      // Refresh data setelah update metadata
-      fetchBusinesses(true);
-    } catch (error) {
-      toast.error("Gagal memperbarui metadata");
-      console.error("Error updating metadata:", error);
-    }
-  };
 
-  const exportCSV = async () => {
-    try {
-      const response = await axios.get<{ csv_data: string }>(`${API}/export/csv`);
-      const csvData = response.data.csv_data;
-
-      const blob = new Blob([csvData], { type: "text/csv" });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `businesses_${new Date().toISOString().split("T")[0]}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
-
-      toast.success("Data berhasil diexport ke CSV");
-    } catch (error) {
-      toast.error("Gagal export data");
-    }
+  const exportCSV = () => {
+    // Direct download approach - simpler and more reliable
+    window.open(`${API}/export/csv`, '_blank');
+    toast.success("Data berhasil diexport ke CSV");
   };
 
   const filteredBusinesses = Array.isArray(businesses) ? businesses.filter(
@@ -270,134 +254,142 @@ const BusinessList = () => {
   };
 
   const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 80) return 'badge-success';
-    if (confidence >= 60) return 'badge-warning';
-    return 'badge-error';
+    if (confidence >= 80) return 'bg-green-100 text-green-800';
+    if (confidence >= 60) return 'bg-yellow-100 text-yellow-800';
+    return 'bg-red-100 text-red-800';
   };
 
   // ==== Subcomponent BusinessCard ====
   const BusinessCard: React.FC<{ business: Business }> = ({ business }) => (
-    <Card className="business-card p-6 h-full flex flex-col" data-testid={`business-${business.id}`}>
+    <Card className="business-card p-6 h-full flex flex-col bg-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 rounded-2xl" data-testid={`business-${business.id}`}>
       {/* Header Section */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-lg text-gray-900 mb-2 truncate">{business.name}</h3>
+          <h3 className="font-bold text-lg text-gray-900 mb-2 truncate">{business.name}</h3>
           <div className="flex items-center space-x-2 mb-2 flex-wrap">
-            <span className="badge badge-info text-xs px-2 py-1">{cleanCategoryName(business.category)}</span>
-            <span className="badge badge-info text-xs px-2 py-1">{cleanAreaName(business.area)}</span>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              {cleanCategoryName(business.category)}
+            </span>
+            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+              {cleanAreaName(business.area)}
+            </span>
           </div>
           <p className="text-sm text-gray-600 mb-3 line-clamp-2 break-words">{business.address}</p>
         </div>
+        
+        {/* Status Indicators - Focus on New Business Indicators */}
         <div className="flex flex-col space-y-1 ml-3 flex-shrink-0">
-          {/* Metadata-based indicators */}
-          {business.indicators?.metadata_analysis && (
-            <span className={`badge text-xs px-2 py-1 ${
-              business.indicators.metadata_analysis.business_age_estimate === 'ultra_new' ? 'badge-error' :
-              business.indicators.metadata_analysis.business_age_estimate === 'very_new' ? 'badge-success' :
-              business.indicators.metadata_analysis.business_age_estimate === 'new' ? 'badge-info' :
-              business.indicators.metadata_analysis.business_age_estimate === 'recent' ? 'badge-warning' :
-              business.indicators.metadata_analysis.business_age_estimate === 'established' ? 'badge-secondary' :
-              'badge-neutral'
+          {/* Recently Opened Indicator */}
+          {business.indicators?.recently_opened && (
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+              ✅ Recently Opened
+            </span>
+          )}
+          
+          {/* Review Spike Indicator */}
+          {business.indicators?.review_spike && (
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
+              📈 Review Spike
+            </span>
+          )}
+          
+          {/* Few Reviews Indicator */}
+          {business.indicators?.few_reviews && (
+            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+              📝 Few Reviews
+            </span>
+          )}
+          
+          {/* Business Age Estimate */}
+          {business.indicators?.metadata_analysis?.business_age_estimate && (
+            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
+              business.indicators.metadata_analysis.business_age_estimate === 'ultra_new' ? 'bg-red-100 text-red-800' :
+              business.indicators.metadata_analysis.business_age_estimate === 'very_new' ? 'bg-green-100 text-green-800' :
+              business.indicators.metadata_analysis.business_age_estimate === 'new' ? 'bg-blue-100 text-blue-800' :
+              business.indicators.metadata_analysis.business_age_estimate === 'recent' ? 'bg-yellow-100 text-yellow-800' :
+              'bg-gray-100 text-gray-800'
             }`}>
               {getBusinessAgeLabel(business.indicators.metadata_analysis)}
             </span>
           )}
           
-          {business.indicators?.is_truly_new && (
-            <span className="badge badge-success text-xs px-2 py-1">
-              ✅ Validasi Baru
-            </span>
-          )}
-          
-          {business.indicators?.newly_discovered && (
-            <span className="badge badge-secondary text-xs px-2 py-1">
-              🔍 Baru Ditemukan
-            </span>
-          )}
-
-          {/* Review-based indicators */}
-          {business.indicators?.metadata_analysis?.oldest_review_date && (
-            <span className="badge badge-info text-xs px-2 py-1">
-              📅 Review sejak: {new Date(business.indicators.metadata_analysis.oldest_review_date).toLocaleDateString('id-ID')}
-            </span>
-          )}
-
-          {business.indicators?.metadata_analysis?.review_age_months && (
-            <span className={`badge text-xs px-2 py-1 ${
-              business.indicators.metadata_analysis.review_age_months < 1 ? 'badge-error' :
-              business.indicators.metadata_analysis.review_age_months < 3 ? 'badge-success' :
-              business.indicators.metadata_analysis.review_age_months < 12 ? 'badge-info' :
-              'badge-warning'
-            }`}>
-              📅 Review {business.indicators.metadata_analysis.review_age_months} bulan
-            </span>
-          )}
-
-          {business.indicators?.review_spike && (
-            <span className="badge badge-info text-xs px-2 py-1">
-              📈 Trending
-            </span>
-          )}
-
-          {business.indicators?.rating_improvement && (
-            <span className="badge badge-success text-xs px-2 py-1">
-              ⬆️ Rating Naik
-            </span>
-          )}
-
-          {business.indicators?.has_photos && (
-            <span className="badge badge-info text-xs px-2 py-1">
-              📸 {business.indicators.metadata_analysis?.photo_count || 0} Foto
-            </span>
-          )}
-
-          {/* Confidence score */}
+          {/* Confidence Score */}
           {business.indicators?.new_business_confidence && business.indicators.new_business_confidence > 60 && (
-            <span className={`badge text-xs px-2 py-1 ${getConfidenceColor(business.indicators.new_business_confidence)}`}>
-              🎯 Confidence: {business.indicators.new_business_confidence}%
+            <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${getConfidenceColor(business.indicators.new_business_confidence)}`}>
+              🎯 {business.indicators.new_business_confidence}% Confidence
             </span>
           )}
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-2 gap-3 mb-4 text-sm flex-grow">
-        <div className="flex items-center space-x-2 min-w-0">
-          <span>⭐</span>
-          <span className="font-medium truncate">{business.rating}</span>
+      {/* Key Metrics Section */}
+      <div className="grid grid-cols-2 gap-4 mb-4">
+        <div className="bg-gray-50 rounded-lg p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="text-yellow-500">⭐</span>
+              <span className="text-sm font-medium text-gray-700">Rating</span>
+            </div>
+            <span className="font-bold text-gray-900">{business.rating || 'N/A'}</span>
+          </div>
         </div>
-        <div className="flex items-center space-x-2 text-gray-600 min-w-0">
-          <span>💬</span>
-          <span className="truncate">{business.review_count} review</span>
+        
+        <div className="bg-gray-50 rounded-lg p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="text-blue-500">💬</span>
+              <span className="text-sm font-medium text-gray-700">Reviews</span>
+            </div>
+            <span className="font-bold text-gray-900">{business.review_count}</span>
+          </div>
         </div>
-        <div className="flex items-center space-x-2 text-gray-600 min-w-0 col-span-2">
-          <span>📞</span>
-          <span className="truncate">{business.phone || "N/A"}</span>
-        </div>
-        <div className="flex items-center space-x-2 text-gray-600 min-w-0 col-span-2">
-          <span>⏱️</span>
-          <span className="text-xs truncate">
+      </div>
+
+      {/* Additional Info Section */}
+      <div className="space-y-2 mb-4 text-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-gray-600">📅 First Seen:</span>
+          <span className="font-medium text-gray-900">
             {new Date(business.first_seen).toLocaleDateString("id-ID")}
           </span>
         </div>
+        
+        {business.indicators?.metadata_analysis?.review_age_months && (
+          <div className="flex items-center justify-between">
+            <span className="text-gray-600">📊 Review Age:</span>
+            <span className="font-medium text-gray-900">
+              {business.indicators.metadata_analysis.review_age_months} months
+            </span>
+          </div>
+        )}
+        
+        {business.indicators?.metadata_analysis?.photo_count && (
+          <div className="flex items-center justify-between">
+            <span className="text-gray-600">📸 Photos:</span>
+            <span className="font-medium text-gray-900">
+              {business.indicators.metadata_analysis.photo_count}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Footer Section */}
       <div className="mt-auto pt-4 border-t border-gray-100">
-        <div className="flex flex-col space-y-2">
+        <div className="flex items-center justify-between">
           <a
-            href={business.google_maps_url}
+            href={business.google_maps_url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(business.address || business.name)}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center space-x-1 w-fit"
+            className="inline-flex items-center px-3 py-2 text-sm font-medium text-blue-600 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors"
             data-testid={`maps-link-${business.id}`}
           >
-            <span>📍</span>
-            <span>Lihat di Maps</span>
+            <span className="mr-1">📍</span>
+            View on Maps
           </a>
-          <div className="text-xs text-gray-500 break-all">
-            <div>Lat: {business.lat ? Number(business.lat).toFixed(4) : '0.0000'}</div>
-            <div>Lng: {business.lng ? Number(business.lng).toFixed(4) : '0.0000'}</div>
+          
+          <div className="text-xs text-gray-500">
+            <div>Lat: {business.lat ? Number(business.lat).toFixed(4) : 'N/A'}</div>
+            <div>Lng: {business.lng ? Number(business.lng).toFixed(4) : 'N/A'}</div>
           </div>
         </div>
       </div>
@@ -406,23 +398,26 @@ const BusinessList = () => {
 
   return (
     <Layout>
-      <div className="p-6 bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen">
+      <div className="bg-gradient-to-br from-gray-50 to-blue-50 min-h-screen p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Daftar Bisnis Baru</h1>
             <p className="text-gray-600">
-              Pantau dan kelola daftar bisnis baru di Yogyakarta
+              Pantau dan kelola daftar bisnis baru
             </p>
           </div>
           <div className="flex space-x-3">
-            <Button onClick={fetchNewData} className="flex items-center space-x-2" variant="default">
+            <Button 
+              onClick={fetchNewData} 
+              className="flex items-center space-x-2 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-lg hover:shadow-xl transform transition-all duration-200 hover:-translate-y-0.5"
+            >
               🔍 <span>Fetch Data Baru</span>
             </Button>
-            <Button onClick={updateMetadata} className="flex items-center space-x-2" variant="outline">
-              🔄 <span>Update Metadata</span>
-            </Button>
-            <Button onClick={exportCSV} className="export-btn flex items-center space-x-2">
+            <Button 
+              onClick={exportCSV} 
+              className="flex items-center space-x-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg hover:shadow-xl transform transition-all duration-200 hover:-translate-y-0.5"
+            >
               ⬇️ <span>Export CSV</span>
             </Button>
           </div>
@@ -436,7 +431,7 @@ const BusinessList = () => {
               <p className="text-sm text-gray-600">Saring bisnis berdasarkan kriteria yang diinginkan</p>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
               <div className="space-y-2">
                 <label className="block text-sm font-semibold text-gray-800">
                   Cari Bisnis
@@ -517,6 +512,42 @@ const BusinessList = () => {
                   </SelectContent>
                 </Select>
               </div>
+              
+              <div className="space-y-2">
+                <label className="block text-sm font-semibold text-gray-800">Radius Pencarian</label>
+                <div className="space-y-2">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="useRadius"
+                      checked={useRadiusFilter}
+                      onChange={(e) => setUseRadiusFilter(e.target.checked)}
+                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="useRadius" className="text-sm text-gray-700">
+                      Gunakan Filter Radius
+                    </label>
+                  </div>
+                  {useRadiusFilter && (
+                    <>
+                      <input
+                        type="range"
+                        min="1000"
+                        max="50000"
+                        step="1000"
+                        value={filters.radius}
+                        onChange={(e) => setFilters({ ...filters, radius: parseInt(e.target.value) })}
+                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                      />
+                      <div className="flex justify-between text-xs text-gray-600">
+                        <span>1km</span>
+                        <span className="font-medium">{Math.round(filters.radius / 1000)}km</span>
+                        <span>50km</span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
             
             <div className="flex items-center justify-between pt-4 border-t border-gray-200">
@@ -530,7 +561,8 @@ const BusinessList = () => {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setFilters({ area: "", category: "", data_age: "" });
+                  setFilters({ area: "", category: "", data_age: "", radius: 5000, center_lat: -8.6500, center_lng: 115.2167 });
+                  setUseRadiusFilter(false);
                   setSearchTerm("");
                 }}
                 className="text-gray-600 border-gray-300 hover:bg-gray-50 hover:border-gray-400 transition-all duration-200 font-medium"

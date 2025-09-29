@@ -1,4 +1,5 @@
 import React, { createContext, useState, ReactNode, useEffect } from "react";
+import axios from 'axios';
 
 interface User {
   id: number;
@@ -32,6 +33,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     if (savedToken && savedUser) {
       setToken(savedToken);
       setUser(JSON.parse(savedUser));
+      
+      // Set authorization header for axios
+      axios.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`;
     }
   }, []);
 
@@ -40,6 +44,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(newUser);
     localStorage.setItem("token", newToken);
     localStorage.setItem("user", JSON.stringify(newUser));
+    
+    // Set default authorization header for axios
+    axios.defaults.headers.common['Authorization'] = `Bearer ${newToken}`;
   };
 
   const logout = () => {
@@ -47,6 +54,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setUser(null);
     localStorage.removeItem("token");
     localStorage.removeItem("user");
+    
+    // Remove authorization header
+    delete axios.defaults.headers.common['Authorization'];
   };
 
   return (

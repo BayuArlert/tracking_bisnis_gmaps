@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useContext } from "react";
 import { AuthContext } from "../context/AuthContext";
 import axios from "axios";
-import { toast } from "sonner";
+import toast from "react-hot-toast";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import Layout from "../components/Layout";
@@ -17,14 +17,19 @@ interface Business {
   review_count: number;
   recently_opened?: boolean;
   review_spike?: boolean;
+  few_reviews?: boolean;
+  has_recent_photo?: boolean;
   first_seen?: string;
 }
 
 interface DashboardStats {
   total_new_businesses: number;
   weekly_growth: number;
+  growth_rate: number;
   top_category: string;
   top_area: string;
+  recently_opened_count: number;
+  trending_count: number;
   recent_businesses: Business[];
 }
 
@@ -44,7 +49,9 @@ const Dashboard: React.FC = () => {
   const { API } = useContext(AuthContext) as AuthContextType;
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [initializingData, setInitializingData] = useState<boolean>(false);
+  const [notificationEmail, setNotificationEmail] = useState<string>('');
+  const [notificationFrequency, setNotificationFrequency] = useState<'weekly' | 'monthly'>('weekly');
+  const [sendingNotification, setSendingNotification] = useState<boolean>(false);
 
   useEffect(() => {
     fetchDashboardStats();
@@ -68,16 +75,45 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const initializeMockData = async (): Promise<void> => {
+
+  const sendNotification = async (type: 'weekly' | 'monthly'): Promise<void> => {
+    if (!notificationEmail) {
+      toast.error("Please enter email address");
+      return;
+    }
+
     try {
-      setInitializingData(true);
-      await axios.post(`${API}/init/mock-data`);
-      toast.success("Data demo berhasil diinisialisasi!");
-      await fetchDashboardStats();
+      setSendingNotification(true);
+      const endpoint = type === 'weekly' 
+        ? `${API}/notifications/weekly-summary`
+        : `${API}/notifications/monthly-summary`;
+      
+      const response = await axios.post(endpoint, { email: notificationEmail });
+      toast.success(`${type === 'weekly' ? 'Weekly' : 'Monthly'} summary sent successfully!`);
     } catch (error) {
-      toast.error("Gagal menginisialisasi data demo");
+      toast.error(`Failed to send ${type} summary`);
     } finally {
-      setInitializingData(false);
+      setSendingNotification(false);
+    }
+  };
+
+  const scheduleNotifications = async (): Promise<void> => {
+    if (!notificationEmail) {
+      toast.error("Please enter email address");
+      return;
+    }
+
+    try {
+      setSendingNotification(true);
+      await axios.post(`${API}/notifications/schedule`, {
+        email: notificationEmail,
+        frequency: notificationFrequency
+      });
+      toast.success(`Notifications scheduled for ${notificationFrequency} delivery`);
+    } catch (error) {
+      toast.error("Failed to schedule notifications");
+    } finally {
+      setSendingNotification(false);
     }
   };
 
@@ -168,22 +204,13 @@ const Dashboard: React.FC = () => {
               Belum Ada Data Bisnis
             </h3>
             <p className="text-gray-600 mb-8 leading-relaxed">
-              Inisialisasi data demo untuk mulai menggunakan dashboard monitoring bisnis dan melihat analisis tren.
+              Data bisnis akan muncul setelah sistem mengambil data dari Google Places API.
             </p>
             <Button
-              onClick={initializeMockData}
-              disabled={initializingData}
-              data-testid="init-data-button"
+              onClick={fetchDashboardStats}
               className="bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white px-8 py-3 rounded-xl shadow-lg hover:shadow-xl transform transition-all duration-200 hover:-translate-y-0.5"
             >
-              {initializingData ? (
-                <div className="flex items-center space-x-2">
-                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Memproses...</span>
-                </div>
-              ) : (
-                "Inisialisasi Data Demo"
-              )}
+              🔄 Refresh Data
             </Button>
           </div>
         </div>
@@ -193,7 +220,7 @@ const Dashboard: React.FC = () => {
 
   return (
     <Layout>
-      <div className="p-6 sm:p-8 lg:p-10 max-w-8xl mx-auto">
+      <div className="max-w-8xl mx-auto p-6">
         {/* Header Section */}
         <div className="mb-6 sm:mb-8">
           <div className="flex items-center justify-between">
@@ -202,7 +229,7 @@ const Dashboard: React.FC = () => {
             Dashboard Monitoring Bisnis
           </h1>
               <p className="text-gray-600 text-base sm:text-lg">
-            Pantau pertumbuhan bisnis baru di Yogyakarta secara real-time
+            Pantau pertumbuhan bisnis baru di Bali secara real-time
           </p>
             </div>
             <div className="flex space-x-2">
@@ -212,12 +239,6 @@ const Dashboard: React.FC = () => {
                 className="text-blue-600 border-blue-200 hover:bg-blue-50"
               >
                 🔄 Refresh
-              </Button>
-              <Button
-                onClick={() => router.visit('/businesslist')}
-                className="bg-blue-600 hover:bg-blue-700"
-              >
-                📊 Detail Analysis
               </Button>
             </div>
           </div>
@@ -239,6 +260,7 @@ const Dashboard: React.FC = () => {
           <StatCard
             title="Pertumbuhan Mingguan"
             value={`${stats.weekly_growth > 0 ? '+' : ''}${stats.weekly_growth}`}
+            growth={stats.growth_rate}
             color="bg-gradient-to-br from-emerald-500 to-green-600"
             icon={
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -273,7 +295,7 @@ const Dashboard: React.FC = () => {
           />
           <StatCard
             title="Recently Opened"
-            value={stats.recent_businesses.filter(b => b.recently_opened).length}
+            value={stats.recently_opened_count || 0}
             color="bg-gradient-to-br from-green-500 to-green-600"
             icon={
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -283,7 +305,7 @@ const Dashboard: React.FC = () => {
           />
           <StatCard
             title="Trending"
-            value={stats.recent_businesses.filter(b => b.review_spike).length}
+            value={stats.trending_count || 0}
             color="bg-gradient-to-br from-red-500 to-red-600"
             icon={
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -293,88 +315,157 @@ const Dashboard: React.FC = () => {
           />
         </div>
 
-        {/* Filter Section */}
+        {/* Quick Actions */}
         <Card className="bg-white border-0 shadow-lg rounded-2xl mb-8">
           <div className="p-6">
-            <div className="flex items-center justify-between mb-8">
+            <div className="flex items-center justify-between mb-6">
               <div>
-                <h3 className="text-xl font-bold text-gray-900 mb-1">Filter Bisnis Baru</h3>
-                <p className="text-sm text-gray-600">Saring bisnis berdasarkan kategori, lokasi, dan status</p>
+                <h3 className="text-xl font-bold text-gray-900 mb-1">Aksi Cepat</h3>
+                <p className="text-sm text-gray-600">Akses fitur utama dashboard dengan mudah</p>
               </div>
-              <div className="flex items-center space-x-3">
-                <span className="text-sm font-medium text-gray-700">Periode:</span>
-                <div className="flex bg-gray-100 rounded-lg p-1">
-                  <button className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md shadow-sm transition-all duration-200">
-                    Mingguan
-                  </button>
-                  <button className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 transition-all duration-200">
-                    Bulanan
-                  </button>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <Button
+                onClick={() => router.visit('/businesslist')}
+                className="h-16 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white text-left justify-start"
+              >
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-lg flex items-center justify-center">
+                    📊
+                  </div>
+                  <div>
+                    <div className="font-semibold">Daftar Bisnis</div>
+                    <div className="text-sm opacity-90">Lihat semua bisnis baru</div>
+                  </div>
+              </div>
+              </Button>
+              
+              <Button
+                onClick={() => router.visit('/statistics')}
+                className="h-16 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white text-left justify-start"
+              >
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-lg flex items-center justify-center">
+                    📈
+                  </div>
+                  <div>
+                    <div className="font-semibold">Statistik & Tren</div>
+                    <div className="text-sm opacity-90">Analisis mendalam</div>
+                  </div>
+              </div>
+              </Button>
+              
+              <Button
+                onClick={() => window.open('/api/export/csv', '_blank')}
+                className="h-16 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white text-left justify-start"
+              >
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-lg flex items-center justify-center">
+                    📥
+                  </div>
+                  <div>
+                    <div className="font-semibold">Export Data</div>
+                    <div className="text-sm opacity-90">Download CSV</div>
+                  </div>
                 </div>
+              </Button>
+            </div>
+          </div>
+        </Card>
+
+        {/* Trend Chart Section */}
+        <Card className="bg-white border-0 shadow-lg rounded-2xl mb-8">
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 mb-1">Tren Pertumbuhan Bisnis</h3>
+                <p className="text-sm text-gray-600">Grafik pertumbuhan bisnis baru per minggu</p>
+              </div>
+              <div className="flex space-x-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-blue-600 border-blue-200 hover:bg-blue-50"
+                >
+                  📊 Mingguan
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-gray-600 border-gray-200 hover:bg-gray-50"
+                >
+                  📅 Bulanan
+                </Button>
               </div>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Kategori Bisnis</label>
-                <select className="w-full p-3 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200 hover:border-gray-400">
-                  <option value="all">Semua Kategori</option>
-                  <option value="restaurant">🍽️ Restaurant</option>
-                  <option value="hotel">🏨 Hotel</option>
-                  <option value="cafe">☕ Cafe</option>
-                  <option value="beauty_salon">💄 Beauty Salon</option>
-                  <option value="establishment">🏢 Establishment</option>
-                </select>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Area Lokasi</label>
-                <select className="w-full p-3 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200 hover:border-gray-400">
-                  <option value="all">Semua Area</option>
-                  <option value="sleman">📍 Sleman</option>
-                  <option value="yogyakarta">🏛️ Kota Yogyakarta</option>
-                  <option value="bantul">🏘️ Bantul</option>
-                  <option value="gunung_kidul">⛰️ Gunung Kidul</option>
-                  <option value="kulon_progo">🌾 Kulon Progo</option>
-                </select>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Jumlah Review</label>
-                <select className="w-full p-3 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200 hover:border-gray-400">
-                  <option value="all">Semua</option>
-                  <option value="0-10">🆕 0-10 Review (Baru)</option>
-                  <option value="11-50">📈 11-50 Review (Growing)</option>
-                  <option value="51+">🏆 51+ Review (Established)</option>
-                </select>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Status Bisnis</label>
-                <select className="w-full p-3 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200 hover:border-gray-400">
-                  <option value="all">Semua Status</option>
-                  <option value="recently_opened">✅ Recently Opened</option>
-                  <option value="review_spike">📈 Trending</option>
-                  <option value="few_reviews">📝 Review Sedikit</option>
-                  <option value="has_photos">📸 Ada Foto</option>
-                </select>
+            {/* Simple Trend Visualization */}
+            <div className="h-64 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl flex items-center justify-center">
+              <div className="text-center">
+                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  📈
+                </div>
+                <h4 className="text-lg font-semibold text-gray-700 mb-2">Grafik Tren</h4>
+                <p className="text-sm text-gray-500 mb-4">Visualisasi tren pertumbuhan bisnis</p>
+                <Button
+                  onClick={() => router.visit('/statistics')}
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
+                >
+                  Lihat Grafik Lengkap
+                </Button>
               </div>
             </div>
-            
-            <div className="flex items-center justify-between mt-8 pt-6 border-t border-gray-200">
-              <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <span className="text-sm font-medium text-gray-700">
-                  Menampilkan bisnis baru berdasarkan filter yang dipilih
-                </span>
+          </div>
+        </Card>
+
+        {/* Top Businesses Section */}
+        <Card className="bg-white border-0 shadow-lg rounded-2xl mb-8">
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 mb-1">Top 10 Bisnis dengan Review Terbanyak</h3>
+                <p className="text-sm text-gray-600">Bisnis paling populer bulan ini</p>
               </div>
               <Button
+                onClick={() => router.visit('/businesslist')}
                 variant="outline"
                 size="sm"
-                className="text-gray-600 border-gray-300 hover:bg-gray-50 hover:border-gray-400 transition-all duration-200 font-medium"
+                className="text-blue-600 border-blue-200 hover:bg-blue-50"
               >
-                🔄 Reset Filter
+                Lihat Semua
               </Button>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {stats.recent_businesses
+                .sort((a, b) => b.review_count - a.review_count)
+                .slice(0, 6)
+                .map((business: Business, index: number) => (
+                  <div
+                    key={business.id}
+                    className="p-4 bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-xl hover:shadow-md transition-all duration-200"
+                  >
+                    <div className="flex items-start justify-between mb-3">
+                      <div className="flex items-center space-x-2">
+                        <div className="w-6 h-6 bg-yellow-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                          {index + 1}
+                        </div>
+                        <h4 className="font-semibold text-gray-900 text-sm">{business.name}</h4>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-600 mb-2">{business.category} • {business.area}</p>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-1 text-amber-600">
+                        <svg className="w-3 h-3 fill-current" viewBox="0 0 20 20">
+                          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                        </svg>
+                        <span className="text-xs font-medium">{business.rating}</span>
+                      </div>
+                      <span className="text-xs font-bold text-yellow-600">{business.review_count} review</span>
+                    </div>
+                  </div>
+                ))}
             </div>
           </div>
         </Card>
@@ -386,14 +477,6 @@ const Dashboard: React.FC = () => {
             <div className="p-4 sm:p-6">
               <div className="flex items-center justify-between mb-4 sm:mb-6">
                 <h3 className="text-lg sm:text-xl font-bold text-gray-900">Bisnis Terbaru</h3>
-                <div className="flex space-x-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-blue-600 border-blue-200 hover:bg-blue-50"
-                  >
-                    Mingguan
-                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -402,7 +485,6 @@ const Dashboard: React.FC = () => {
                   >
                     Lihat Semua
                   </Button>
-                </div>
               </div>
               <div className="space-y-3 sm:space-y-4">
                 {stats.recent_businesses.slice(0, 5).map((business: Business) => (
@@ -438,12 +520,12 @@ const Dashboard: React.FC = () => {
                               📈 Lonjakan Review
                             </span>
                           )}
-                          {business.review_count < 10 && (
+                          {business.few_reviews && (
                             <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-full flex items-center">
                               📝 Review Sedikit
                             </span>
                           )}
-                          {business.review_count >= 10 && business.review_count < 50 && (
+                          {business.has_recent_photo && (
                             <span className="px-2 py-1 bg-yellow-100 text-yellow-700 text-xs font-medium rounded-full flex items-center">
                               📸 Foto Recent
                           </span>
@@ -452,7 +534,7 @@ const Dashboard: React.FC = () => {
                         
                         {/* Tanggal Muncul */}
                         <div className="text-xs text-gray-500 mt-2">
-                          Muncul: {new Date(business.first_seen).toLocaleDateString('id-ID')}
+                          Muncul: {business.first_seen ? new Date(business.first_seen).toLocaleDateString('id-ID') : 'N/A'}
                         </div>
                       </div>
                     </div>
@@ -481,7 +563,7 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <span className="text-lg font-bold text-emerald-600">
-                    {stats.recent_businesses.filter(b => b.recently_opened).length}
+                    {stats.recently_opened_count || 0}
                   </span>
                 </div>
 
@@ -499,7 +581,7 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <span className="text-lg font-bold text-orange-600">
-                    {stats.recent_businesses.filter(b => b.review_spike).length}
+                    {stats.trending_count || 0}
                   </span>
                 </div>
 
@@ -517,7 +599,7 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <span className="text-lg font-bold text-blue-600">
-                    {stats.recent_businesses.filter(b => b.review_count >= 10 && b.review_count < 50).length}
+                    {stats.recent_businesses.filter(b => b.has_recent_photo).length}
                   </span>
                 </div>
 
@@ -535,13 +617,131 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <span className="text-lg font-bold text-gray-600">
-                    {stats.recent_businesses.filter(b => b.review_count < 10).length}
+                    {stats.recent_businesses.filter(b => b.few_reviews).length}
                   </span>
                 </div>
               </div>
             </div>
           </Card>
         </div>
+
+        {/* Notification Section */}
+        <Card className="bg-white border-0 shadow-lg rounded-2xl">
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 mb-1">Email Notifications</h3>
+                <p className="text-sm text-gray-600">Get automated summaries of new businesses</p>
+              </div>
+              <div className="flex items-center space-x-2">
+                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                <span className="text-sm font-medium text-gray-700">
+                  Automated Reports Available
+                </span>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-semibold text-gray-800 mb-2">Email Address</label>
+                  <input
+                    type="email"
+                    placeholder="admin@example.com"
+                    value={notificationEmail}
+                    onChange={(e) => setNotificationEmail(e.target.value)}
+                    className="w-full p-3 text-sm border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm transition-all duration-200 hover:border-gray-400"
+                  />
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-semibold text-gray-800 mb-2">Frequency</label>
+                  <div className="flex bg-gray-100 rounded-lg p-1">
+                    <button 
+                      onClick={() => setNotificationFrequency('weekly')}
+                      className={`px-4 py-2 text-sm font-medium rounded-md shadow-sm transition-all duration-200 ${
+                        notificationFrequency === 'weekly' 
+                          ? 'text-white bg-blue-600' 
+                          : 'text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      Weekly
+                    </button>
+                    <button 
+                      onClick={() => setNotificationFrequency('monthly')}
+                      className={`px-4 py-2 text-sm font-medium rounded-md shadow-sm transition-all duration-200 ${
+                        notificationFrequency === 'monthly' 
+                          ? 'text-white bg-blue-600' 
+                          : 'text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      Monthly
+                    </button>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="space-y-3">
+                <Button
+                  onClick={() => sendNotification('weekly')}
+                  disabled={sendingNotification || !notificationEmail}
+                  className="w-full bg-green-600 hover:bg-green-700 text-white"
+                >
+                  {sendingNotification ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Sending...</span>
+                    </div>
+                  ) : (
+                    "📧 Send Weekly Summary"
+                  )}
+                </Button>
+                
+                <Button
+                  onClick={() => sendNotification('monthly')}
+                  disabled={sendingNotification || !notificationEmail}
+                  className="w-full bg-purple-600 hover:bg-purple-700 text-white"
+                >
+                  {sendingNotification ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span>Sending...</span>
+                    </div>
+                  ) : (
+                    "📅 Send Monthly Summary"
+                  )}
+                </Button>
+                
+                <Button
+                  onClick={scheduleNotifications}
+                  disabled={sendingNotification || !notificationEmail}
+                  variant="outline"
+                  className="w-full text-blue-600 border-blue-200 hover:bg-blue-50"
+                >
+                  {sendingNotification ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                      <span>Scheduling...</span>
+                    </div>
+                  ) : (
+                    `⏰ Schedule ${notificationFrequency} Notifications`
+                  )}
+                </Button>
+              </div>
+            </div>
+            
+            <div className="mt-6 pt-4 border-t border-gray-200">
+              <div className="flex items-center space-x-2 text-sm text-gray-600">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span>
+                  Notifications include CSV export, top businesses, growth statistics, and trending categories.
+                </span>
+              </div>
+            </div>
+          </div>
+        </Card>
       </div>
     </Layout>
   );
