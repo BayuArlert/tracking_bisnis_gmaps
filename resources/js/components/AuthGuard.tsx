@@ -1,6 +1,6 @@
-import React, { useContext, useEffect, useState } from 'react';
+// resources/js/components/AuthGuard.tsx
+import React, { useContext, useEffect, useState, useRef } from 'react';
 import { AuthContext } from '../context/AuthContext';
-import { router } from '@inertiajs/react';
 
 interface AuthGuardProps {
   children: React.ReactNode;
@@ -8,22 +8,40 @@ interface AuthGuardProps {
 }
 
 const AuthGuard: React.FC<AuthGuardProps> = ({ children, fallback }) => {
-  const { user, token } = useContext(AuthContext);
-  const [isLoading, setIsLoading] = useState(true);
+  const { user, token, isLoggingOut, isLoading } = useContext(AuthContext);
+  const [isChecking, setIsChecking] = useState(true);
+  const hasRedirected = useRef(false);
 
   useEffect(() => {
-    // Check if user is authenticated
-    if (!token || !user) {
-      // Redirect to login if not authenticated
-      router.visit('/login');
+    // If still loading, wait
+    if (isLoading) {
       return;
     }
-    
-    setIsLoading(false);
-  }, [token, user]);
+
+    // Don't redirect if currently logging out
+    if (isLoggingOut) {
+      return;
+    }
+
+    // Prevent multiple redirects
+    if (hasRedirected.current) {
+      return;
+    }
+
+    // Check if user is authenticated (both token and user must exist)
+    if (!token || !user) {
+      hasRedirected.current = true;
+      // Force redirect to login if not authenticated
+      window.location.href = '/login';
+      return;
+    }
+
+    // User is authenticated, show content
+    setIsChecking(false);
+  }, [token, user, isLoggingOut, isLoading]);
 
   // Show loading while checking authentication
-  if (isLoading) {
+  if (isChecking || isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-cyan-50 flex items-center justify-center">
         <div className="text-center">

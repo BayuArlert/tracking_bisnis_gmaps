@@ -63,7 +63,7 @@ const Login: React.FC = () => {
           
           if (response.data.success) {
             login(response.data.access_token, response.data.user);
-            toast.success(`🎉 Login berhasil! Selamat datang, ${response.data.user.username}!`);
+            toast.success(`🎉 Login berhasil! Selamat datang, ${response.data.user.name}!`);
             // Redirect to dashboard
             setTimeout(() => {
               window.location.href = '/dashboard';

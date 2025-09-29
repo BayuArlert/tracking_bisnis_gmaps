@@ -7,10 +7,11 @@ use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\StatisticsController;
 use App\Http\Controllers\NotificationController;
 
-// Authentication routes with rate limiting
+// API Authentication routes (for frontend API calls)
 Route::middleware('throttle:5,1')->group(function () {
     Route::post('/auth/register', [App\Http\Controllers\AuthController::class, 'register']);
     Route::post('/auth/login', [App\Http\Controllers\AuthController::class, 'login']);
+    Route::post('/auth/logout', [App\Http\Controllers\AuthController::class, 'logout']);
 });
 
 // Protected routes
@@ -25,24 +26,24 @@ Route::middleware('auth:sanctum')->group(function () {
             ]
         ]);
     });
-    
-    Route::post('/auth/logout', [App\Http\Controllers\AuthController::class, 'logout']);
 });
 
 
 
-// Protected business routes
+// Protected routes - require authentication
 Route::middleware('auth:sanctum')->group(function () {
+    // Dashboard and statistics routes
+    Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
+    Route::get('/statistics', [StatisticsController::class, 'index']);
+    Route::get('/statistics/heatmap', [StatisticsController::class, 'getHeatmapData']);
+    
+    // Business routes
     Route::get('/businesses', [BusinessController::class, 'index']);
     Route::get('/businesses/filter-options', [BusinessController::class, 'getFilterOptions']);
     Route::get('/businesses/update-metadata', [BusinessController::class, 'updateMetadataForExistingData']);
     Route::get('/export/csv', [BusinessController::class, 'exportCSV']);
     
-    Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
-    
-    Route::get('/statistics', [StatisticsController::class, 'index']);
-    Route::get('/statistics/heatmap', [StatisticsController::class, 'getHeatmapData']);
-    
+    // Notification routes
     Route::post('/notifications/weekly-summary', [NotificationController::class, 'sendWeeklySummary']);
     Route::post('/notifications/monthly-summary', [NotificationController::class, 'sendMonthlySummary']);
     Route::post('/notifications/schedule', [NotificationController::class, 'scheduleNotifications']);

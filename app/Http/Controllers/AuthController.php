@@ -60,7 +60,12 @@ class AuthController extends Controller
         
         if (Auth::attempt([$field => $credentials['username'], 'password' => $credentials['password']])) {
             $user = Auth::user();
-            $request->session()->regenerate();
+            
+            // Only regenerate session if session is available (web routes)
+            if ($request->hasSession()) {
+                $request->session()->regenerate();
+            }
+            
             $token = $user->createToken('auth_token')->plainTextToken;
 
             return response()->json([
@@ -68,7 +73,7 @@ class AuthController extends Controller
                 'message' => 'Login berhasil!',
                 'user' => [
                     'id' => $user->id,
-                    'username' => $user->name,
+                    'name' => $user->name,
                     'email' => $user->email,
                 ],
                 'access_token' => $token,
@@ -85,11 +90,26 @@ class AuthController extends Controller
     // 🔹 Logout (API)
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        $user = $request->user();
+        
+        if ($user) {
+            $user->tokens()->delete();
+        } else {
+            // Fallback: try to find token from Authorization header
+            $authHeader = $request->header('Authorization');
+            if ($authHeader && str_starts_with($authHeader, 'Bearer ')) {
+                $token = substr($authHeader, 7);
+                $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($token);
+                if ($accessToken) {
+                    $accessToken->delete();
+                }
+            }
+        }
 
         return response()->json([
             'success' => true,
             'message' => 'Logout berhasil!',
         ]);
     }
+
 }

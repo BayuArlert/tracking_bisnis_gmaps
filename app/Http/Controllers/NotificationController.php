@@ -7,6 +7,7 @@ use App\Models\Business;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Carbon\Carbon;
+use Carbon\CarbonInterface;
 
 class NotificationController extends Controller
 {
@@ -81,7 +82,7 @@ class NotificationController extends Controller
         $lastMonthEnd = now()->subMonth()->endOfMonth();
         $newBusinessesLastMonth = Business::whereBetween('first_seen', [$lastMonthStart, $lastMonthEnd])->count();
         
-        $growthRate = $lastMonthBusinesses > 0 
+        $growthRate = $newBusinessesLastMonth > 0 
             ? (($newBusinessesThisMonth - $newBusinessesLastMonth) / $newBusinessesLastMonth) * 100 
             : 0;
         
@@ -303,7 +304,7 @@ class NotificationController extends Controller
             'email' => $email,
             'frequency' => $frequency,
             'next_run' => $frequency === 'weekly' 
-                ? now()->next(Carbon::MONDAY)->format('Y-m-d H:i:s')
+                ? now()->next(CarbonInterface::MONDAY)->format('Y-m-d H:i:s')
                 : now()->addMonth()->startOfMonth()->format('Y-m-d H:i:s'),
         ]);
     }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Business;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 class BusinessController extends Controller
 {
@@ -308,19 +309,19 @@ class BusinessController extends Controller
                     ->get($url);
                 
                 if (!$response->successful()) {
-                    \Log::warning("Google Places API error for area {$areaName}: " . $response->status());
+                    Log::warning("Google Places API error for area {$areaName}: " . $response->status());
                     continue;
                 }
                 
                 $places = $response->json();
                 
                 if (isset($places['error_message'])) {
-                    \Log::error("Google Places API error: " . $places['error_message']);
+                    Log::error("Google Places API error: " . $places['error_message']);
                     continue;
                 }
                 
             } catch (\Exception $e) {
-                \Log::error("Failed to fetch places for area {$areaName}: " . $e->getMessage());
+                Log::error("Failed to fetch places for area {$areaName}: " . $e->getMessage());
                 continue;
             }
 
@@ -335,14 +336,14 @@ class BusinessController extends Controller
                         ->get($detailUrl);
                     
                     if (!$detailResponse->successful()) {
-                        \Log::warning("Google Places Details API error for place {$place['place_id']}: " . $detailResponse->status());
+                        Log::warning("Google Places Details API error for place {$place['place_id']}: " . $detailResponse->status());
                         continue;
                     }
                     
                     $detail = $detailResponse->json();
                     
                     if (isset($detail['error_message'])) {
-                        \Log::error("Google Places Details API error: " . $detail['error_message']);
+                        Log::error("Google Places Details API error: " . $detail['error_message']);
                         continue;
                     }
                     
@@ -350,21 +351,21 @@ class BusinessController extends Controller
                     if (!$info) continue;
                     
                 } catch (\Exception $e) {
-                    \Log::error("Failed to fetch details for place {$place['place_id']}: " . $e->getMessage());
+                    Log::error("Failed to fetch details for place {$place['place_id']}: " . $e->getMessage());
                     continue;
                 }
 
                 // Validasi data sebelum diproses
                 $validationErrors = $this->validateBusinessData($info);
                 if (!empty($validationErrors)) {
-                    \Log::warning("Data validation failed for place {$place['place_id']}: " . implode(', ', $validationErrors));
+                    Log::warning("Data validation failed for place {$place['place_id']}: " . implode(', ', $validationErrors));
                     continue;
                 }
 
                 // Cek duplikasi sebelum membuat record baru
                 $duplicateBusiness = $this->checkForDuplicates($info);
                 if ($duplicateBusiness && $duplicateBusiness->place_id !== $place['place_id']) {
-                    \Log::info("Duplicate business detected: {$info['name']} - merging with existing record");
+                    Log::info("Duplicate business detected: {$info['name']} - merging with existing record");
                     $business = $duplicateBusiness;
                     $isNew = false;
                 } else {
@@ -459,33 +460,6 @@ class BusinessController extends Controller
         return $indicators;
     }
 
-    private function detectRecentlyOpened($info, $business)
-    {
-        $businessStatus = $info['business_status'] ?? '';
-        $reviewCount = $info['user_ratings_total'] ?? 0;
-        
-        // Google Maps API memberikan status "OPENED_RECENTLY" - ini yang paling akurat
-        if ($businessStatus === 'OPENED_RECENTLY') {
-            return true;
-        }
-        
-        // Jika bisnis sudah ada di database dan first_seen > 30 hari, bukan bisnis baru
-        if ($business->exists && $business->first_seen < now()->subDays(30)) {
-            return false;
-        }
-        
-        // Jika review count sangat rendah DAN rating ada, kemungkinan baru buka
-        if ($reviewCount < 5 && $info['rating']) {
-            return true;
-        }
-        
-        // Jika review count rendah DAN tidak ada rating, kemungkinan baru buka
-        if ($reviewCount < 3 && !$info['rating']) {
-            return true;
-        }
-        
-        return false;
-    }
 
     private function detectRatingImprovement($business, $currentRating)
     {
@@ -513,36 +487,6 @@ class BusinessController extends Controller
         return false;
     }
 
-    private function isTrulyNewBusiness($info, $business)
-    {
-        $businessStatus = $info['business_status'] ?? '';
-        $reviewCount = $info['user_ratings_total'] ?? 0;
-        
-        // Google Maps API memberikan status "OPENED_RECENTLY" - ini yang paling akurat
-        if ($businessStatus === 'OPENED_RECENTLY') {
-            return true;
-        }
-        
-        // Jika bisnis sudah ada di database dengan first_seen lama, bukan bisnis baru
-        if ($business->exists && $business->first_seen < now()->subDays(60)) {
-            return false;
-        }
-        
-        // Kriteria untuk bisnis benar-benar baru:
-        // 1. Review count sangat rendah (< 3)
-        // 2. Tidak ada rating atau rating rendah
-        // 3. Tidak ada foto atau foto sedikit
-        
-        $hasLowActivity = $reviewCount < 3;
-        $hasLowRating = !$info['rating'] || $info['rating'] < 3.0;
-        $hasFewPhotos = count($info['photos'] ?? []) < 2;
-        
-        // Jika memenuhi minimal 2 dari 3 kriteria, kemungkinan bisnis baru
-        $criteria = [$hasLowActivity, $hasLowRating, $hasFewPhotos];
-        $metCriteria = array_filter($criteria);
-        
-        return count($metCriteria) >= 2;
-    }
 
     private function analyzeBusinessMetadata($info, $reviews, $photos)
     {
@@ -774,7 +718,7 @@ class BusinessController extends Controller
                 $updated++;
             } catch (\Exception $e) {
                 // Log error jika ada
-                \Log::error("Error updating metadata for business {$business->id}: " . $e->getMessage());
+                Log::error("Error updating metadata for business {$business->id}: " . $e->getMessage());
             }
         }
         
@@ -785,25 +729,6 @@ class BusinessController extends Controller
         ]);
     }
 
-    private function calculateNewBusinessConfidence($indicators, $business)
-    {
-        $score = 0;
-        
-        // Scoring berdasarkan berbagai faktor
-        if ($indicators['recently_opened']) $score += 35;
-        if ($indicators['is_truly_new']) $score += 40; // Faktor terpenting
-        if ($indicators['few_reviews']) $score += 15;
-        if ($indicators['low_rating_count']) $score += 25;
-        if ($indicators['has_photos']) $score += 5;
-        if ($indicators['has_recent_photo']) $score += 10;
-        if ($indicators['rating_improvement']) $score += 10;
-        if ($indicators['review_spike']) $score += 15;
-        
-        // Bonus kecil untuk bisnis yang baru ditemukan (bukan bisnis baru)
-        if ($indicators['newly_discovered']) $score += 5;
-        
-        return min(100, $score); // Maksimal 100
-    }
 
     private function hasRecentPhoto(array $photos): bool
     {

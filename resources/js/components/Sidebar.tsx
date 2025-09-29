@@ -10,11 +10,13 @@ interface NavItem {
 }
 
 const Navbar: React.FC = () => {
-    const { logout, user } = useContext(AuthContext);
+    const { logout, user, isLoading } = useContext(AuthContext);
 
     const handleLogout = () => {
+        console.log('=== LOGOUT BUTTON CLICKED ===');
+        console.log('Current user from context:', user);
+        console.log('Calling logout function...');
         logout();
-        router.visit("/login");
     };
 
     // Get current URL from Inertia
@@ -176,10 +178,10 @@ const Navbar: React.FC = () => {
                     </div>
                     <div className="flex-1 min-w-0">
                         <p className="text-xs font-semibold text-gray-800 truncate">
-                            {user?.username || "Loading..."}
+                            {isLoading ? "Loading..." : (user?.name || "Guest")}
                         </p>
                         <p className="text-xs text-gray-500">
-                            {user?.email ? user.email.split('@')[0] : "Administrator"}
+                            {isLoading ? "Please wait..." : (user?.email ? user.email.split('@')[0] : "User")}
                         </p>
                     </div>
                 </div>

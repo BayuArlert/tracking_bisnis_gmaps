@@ -193,7 +193,8 @@ const Dashboard: React.FC = () => {
     );
   }
 
-  if (!stats || stats.total_new_businesses === 0) {
+
+  if (!stats) {
     return (
       <Layout>
         <div className="p-8 min-h-screen">
@@ -204,7 +205,7 @@ const Dashboard: React.FC = () => {
               </svg>
             </div>
             <h3 className="text-2xl font-bold text-gray-800 mb-4">
-              Belum Ada Data Bisnis
+              Loading Data...
             </h3>
             <p className="text-gray-600 mb-8 leading-relaxed">
               Data bisnis akan muncul setelah sistem mengambil data dari Google Places API.
@@ -251,7 +252,7 @@ const Dashboard: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 mb-6">
           <StatCard
             title="Total Bisnis Baru"
-            value={stats.total_new_businesses.toLocaleString()}
+            value={stats.total_new_businesses?.toLocaleString() || '0'}
             growth={stats.weekly_growth}
             color="bg-gradient-to-br from-blue-500 to-blue-600"
             icon={
@@ -262,8 +263,8 @@ const Dashboard: React.FC = () => {
           />
           <StatCard
             title="Pertumbuhan Mingguan"
-            value={`${stats.weekly_growth > 0 ? '+' : ''}${stats.weekly_growth}`}
-            growth={stats.growth_rate}
+            value={`${(stats.weekly_growth || 0) > 0 ? '+' : ''}${stats.weekly_growth || 0}`}
+            growth={stats.growth_rate || 0}
             color="bg-gradient-to-br from-emerald-500 to-green-600"
             icon={
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -273,7 +274,7 @@ const Dashboard: React.FC = () => {
           />
           <StatCard
             title="Kategori Terpopuler"
-            value={stats.top_category}
+            value={stats.top_category || 'N/A'}
             color="bg-gradient-to-br from-purple-500 to-purple-600"
             icon={
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -287,7 +288,7 @@ const Dashboard: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 mb-6 sm:mb-8">
           <StatCard
             title="Area Terpopuler"
-            value={stats.top_area}
+            value={stats.top_area || 'N/A'}
             color="bg-gradient-to-br from-orange-500 to-orange-600"
             icon={
               <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -371,10 +372,10 @@ const Dashboard: React.FC = () => {
                     <div className="font-semibold">Export Data</div>
                     <div className="text-sm opacity-90">Download CSV</div>
                   </div>
-                </div>
+              </div>
               </Button>
+              </div>
             </div>
-          </div>
         </Card>
 
         {/* Trend Chart Section */}
@@ -393,9 +394,9 @@ const Dashboard: React.FC = () => {
                 >
                   📊 Mingguan
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
+              <Button
+                variant="outline"
+                size="sm"
                   className="text-gray-600 border-gray-200 hover:bg-gray-50"
                 >
                   📅 Bulanan
@@ -416,7 +417,7 @@ const Dashboard: React.FC = () => {
                   className="bg-blue-600 hover:bg-blue-700 text-white"
                 >
                   Lihat Grafik Lengkap
-                </Button>
+              </Button>
               </div>
             </div>
           </div>
@@ -441,7 +442,7 @@ const Dashboard: React.FC = () => {
             </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {stats.recent_businesses
+              {(stats.recent_businesses || [])
                 .sort((a, b) => b.review_count - a.review_count)
                 .slice(0, 6)
                 .map((business: Business, index: number) => (
@@ -490,7 +491,7 @@ const Dashboard: React.FC = () => {
                   </Button>
               </div>
               <div className="space-y-3 sm:space-y-4">
-                {stats.recent_businesses.slice(0, 5).map((business: Business) => (
+                {(stats.recent_businesses || []).slice(0, 5).map((business: Business) => (
                   <div
                     key={business.id}
                     className="p-3 sm:p-4 bg-gradient-to-r from-white to-blue-50/50 border border-blue-100 rounded-xl hover:shadow-md transition-all duration-200 hover:-translate-y-0.5"
@@ -602,7 +603,7 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <span className="text-lg font-bold text-blue-600">
-                    {stats.recent_businesses.filter(b => b.has_recent_photo).length}
+                    {(stats.recent_businesses || []).filter(b => b.has_recent_photo).length}
                   </span>
                 </div>
 
@@ -620,7 +621,7 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <span className="text-lg font-bold text-gray-600">
-                    {stats.recent_businesses.filter(b => b.few_reviews).length}
+                    {(stats.recent_businesses || []).filter(b => b.few_reviews).length}
                   </span>
                 </div>
               </div>
