@@ -6,6 +6,6 @@ startCommand = "php artisan migrate --force && php artisan serve --host 0.0.0.0 
 buildCommand = """
 composer install --no-dev --optimize-autoloader
 php artisan key:generate --force
-npm install
+npm ci --include=dev
 npm run build
 """
