@@ -18,10 +18,21 @@ interface AuthContextType {
   logout: () => void;
 }
 
+// Get API URL from environment variables
+const getApiUrl = () => {
+  // In development, use localhost
+  if (import.meta.env.DEV) {
+    return "http://localhost:8000/api";
+  }
+  
+  // In production, use the current origin (Railway URL)
+  return `${window.location.origin}/api`;
+};
+
 export const AuthContext = createContext<AuthContextType>({
   user: null,
   token: null,
-  API: "http://localhost:8000/api", // ganti sesuai backend
+  API: getApiUrl(),
   isLoading: true,
   isLoggingOut: false,
   login: () => {},
@@ -34,7 +45,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
-  const API = "http://localhost:8000/api";
+  const API = getApiUrl();
 
   useEffect(() => {
     // Configure axios to send credentials with requests

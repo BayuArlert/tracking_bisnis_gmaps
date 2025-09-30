@@ -22,6 +22,10 @@ return [
     'allowed_origins' => [
         env('FRONTEND_URL', 'http://localhost:3000'),
         env('APP_URL', 'http://localhost:8000'),
+        // Allow Railway frontend URLs
+        'https://trackingbisnisgmaps-production.up.railway.app',
+        // Allow any subdomain of railway.app for this project
+        'https://*.up.railway.app',
     ],
 
     'allowed_origins_patterns' => [],
