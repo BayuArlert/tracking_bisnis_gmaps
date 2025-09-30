@@ -14,6 +14,40 @@ Route::middleware('throttle:5,1')->group(function () {
     Route::post('/auth/logout', [App\Http\Controllers\AuthController::class, 'logout']);
 });
 
+// Route to verify token validity (outside auth middleware to avoid circular dependency)
+Route::get('/auth/verify', function (Request $request) {
+    $authHeader = $request->header('Authorization');
+    
+    if (!$authHeader || !str_starts_with($authHeader, 'Bearer ')) {
+        return response()->json([
+            'success' => false,
+            'message' => 'No valid token provided'
+        ], 401);
+    }
+    
+    $token = substr($authHeader, 7);
+    $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($token);
+    
+    if (!$accessToken || !$accessToken->tokenable) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Invalid or expired token'
+        ], 401);
+    }
+    
+    $user = $accessToken->tokenable;
+    
+    return response()->json([
+        'success' => true,
+        'message' => 'Token is valid',
+        'user' => [
+            'id' => $user->id,
+            'name' => $user->name,
+            'email' => $user->email,
+        ]
+    ]);
+});
+
 // Protected routes
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/user', function (Request $request) {

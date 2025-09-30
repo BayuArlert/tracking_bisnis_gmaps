@@ -1,4 +1,4 @@
-import React, { useState, useContext, ChangeEvent, FormEvent } from "react";
+import React, { useState, useContext, ChangeEvent, FormEvent, useEffect } from "react";
 import { AuthContext } from "../../context/AuthContext";
 import axios, { AxiosError } from "axios";
 import toast from "react-hot-toast";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Eye, EyeOff } from "lucide-react";
+import { router } from "@inertiajs/react";
 
 interface FormData {
   username: string;
@@ -14,9 +15,11 @@ interface FormData {
 }
 
 const Login: React.FC = () => {
-  const { login, API } = useContext(AuthContext) as {
+  const { login, API, user, isLoading } = useContext(AuthContext) as {
     login: (token: string, user: unknown) => void;
     API: string;
+    user: any;
+    isLoading: boolean;
   };
 
   const [isLogin, setIsLogin] = useState<boolean>(true);
@@ -28,6 +31,14 @@ const Login: React.FC = () => {
   const [loading, setLoading] = useState<boolean>(false);
   const [showPassword, setShowPassword] = useState<boolean>(false);
   const [formErrors, setFormErrors] = useState<{[key: string]: string}>({});
+
+  // Redirect to dashboard if user is already logged in
+  useEffect(() => {
+    if (!isLoading && user) {
+      console.log('Login: User already logged in, redirecting to dashboard');
+      router.visit('/dashboard');
+    }
+  }, [user, isLoading]);
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     setFormData({
@@ -62,12 +73,12 @@ const Login: React.FC = () => {
           });
           
           if (response.data.success) {
-            login(response.data.access_token, response.data.user);
+            await login(response.data.access_token, response.data.user);
             toast.success(`🎉 Login berhasil! Selamat datang, ${response.data.user.name}!`);
-            // Redirect to dashboard
+            // Redirect to dashboard using Inertia
             setTimeout(() => {
-              window.location.href = '/dashboard';
-            }, 2000);
+              router.visit('/dashboard');
+            }, 1000);
           } else {
             toast.error("Login gagal, coba lagi");
           }
@@ -88,20 +99,17 @@ const Login: React.FC = () => {
           });
           
           if (response.data.success) {
-            login(response.data.access_token, response.data.user);
-            toast.success("🎉 Registrasi berhasil! Selamat datang!");
+            toast.success("🎉 Registrasi berhasil! Silakan login dengan akun yang baru dibuat.");
             
-            // Auto-switch to login tab after successful registration
+            // Clear form and switch to login tab
+            setFormData({ username: "", email: "", password: "" });
+            setFormErrors({});
+            setIsLogin(true);
+            
+            // Show success message for login
             setTimeout(() => {
-              setIsLogin(true);
-              setFormData({ username: "", email: "", password: "" });
-              toast.success("✨ Silakan login dengan akun yang baru dibuat");
+              toast.success("✨ Silakan login dengan username dan password yang baru dibuat");
             }, 1500);
-            
-            // Redirect to dashboard after a short delay
-            setTimeout(() => {
-              window.location.href = '/dashboard';
-            }, 3000);
           } else {
             toast.error("Registrasi gagal, coba lagi");
           }

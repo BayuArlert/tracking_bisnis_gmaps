@@ -5,8 +5,12 @@ import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
 import { createRoot } from 'react-dom/client';
 import { AuthProvider } from './context/AuthContext';
 import { Toaster } from 'react-hot-toast';
+import { setupInertiaAuth } from './lib/inertia';
 
 const appName = import.meta.env.VITE_APP_NAME || 'Laravel';
+
+// Setup Inertia authentication
+setupInertiaAuth();
 
 createInertiaApp({
     title: (title) => title ? `${title} - ${appName}` : appName,

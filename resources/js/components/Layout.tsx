@@ -1,12 +1,54 @@
 // components/Layout.tsx
-import React from "react";
+import React, { useContext, useEffect } from "react";
+import { AuthContext } from "../context/AuthContext";
 import Navbar from "./Sidebar";
+import { router } from "@inertiajs/react";
 
 interface LayoutProps {
     children: React.ReactNode;
 }
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
+    const { user, isLoading } = useContext(AuthContext);
+
+    useEffect(() => {
+        console.log('Layout useEffect - isLoading:', isLoading, 'user:', user);
+        
+        // Only redirect if we're not loading AND we have no user
+        // This prevents redirect during initialization
+        if (!isLoading && !user) {
+            console.log('Layout: No user after loading, redirecting to login in 1000ms');
+            const timer = setTimeout(() => {
+                console.log('Layout: Executing redirect to login');
+                router.visit('/login');
+            }, 1000);
+            return () => clearTimeout(timer);
+        }
+    }, [user, isLoading]);
+
+    console.log('Layout render - isLoading:', isLoading, 'user:', user);
+
+    // Show loading while checking authentication
+    if (isLoading) {
+        console.log('Layout: Showing loading screen');
+        return (
+            <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+                <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                    <p className="text-gray-600">Loading...</p>
+                </div>
+            </div>
+        );
+    }
+
+    // If no user after loading, don't render anything (will redirect)
+    if (!user) {
+        console.log('Layout: No user, returning null (will redirect)');
+        return null;
+    }
+
+    console.log('Layout: Rendering main content');
+
     return (
         <div className="flex min-h-screen">
             {/* Fixed Sidebar */}

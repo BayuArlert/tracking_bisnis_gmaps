@@ -1,21 +1,41 @@
 <?php
 
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Auth;
 use App\Http\Controllers\AuthController;
 use Inertia\Inertia;
 
-// Home route
+// Home route - redirect to dashboard if authenticated, otherwise to login
 Route::get('/', function () {
-    return redirect('/dashboard');
+    if (Auth::check()) {
+        return redirect('/dashboard');
+    }
+    return redirect('/login');
 })->name('home');
 
 // Login page (public)
-Route::get('/login', function () {
+Route::get('/login', function (Request $request) {
+    // Check session authentication first
+    if (Auth::check()) {
+        return redirect('/dashboard');
+    }
+    
+    // Check token authentication
+    $authHeader = $request->header('Authorization');
+    if ($authHeader && str_starts_with($authHeader, 'Bearer ')) {
+        $token = substr($authHeader, 7);
+        $accessToken = \Laravel\Sanctum\PersonalAccessToken::findToken($token);
+        if ($accessToken && $accessToken->tokenable) {
+            return redirect('/dashboard');
+        }
+    }
+    
     return Inertia::render('Auth/Login');
 })->name('login')->middleware('guest');
 
 // Protected routes - require authentication
-Route::middleware('auth:web')->group(function () {
+Route::middleware('auth:sanctum')->group(function () {
     Route::get('/dashboard', function () {
         return Inertia::render('Dashboard');
     })->name('dashboard');

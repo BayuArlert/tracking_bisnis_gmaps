@@ -289,13 +289,17 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
   const toggleMarkers = () => {
     markersRef.current.forEach(marker => {
       // Handle both AdvancedMarkerElement and regular Marker
-      if (marker.setMap) {
-        // Regular Marker
-        marker.setMap(marker.getMap() ? null : mapInstance.current);
-      } else {
-        // AdvancedMarkerElement
+      if (marker && typeof marker.getMap === 'function') {
+        // Regular Marker - has getMap() and setMap() methods
+        const isVisible = marker.getMap() !== null;
+        marker.setMap(isVisible ? null : mapInstance.current);
+      } else if (marker && typeof marker.map !== 'undefined') {
+        // AdvancedMarkerElement - has map property
         const isVisible = marker.map !== null;
         marker.map = isVisible ? null : mapInstance.current;
+      } else {
+        // Fallback for other marker types
+        console.warn('Unknown marker type:', marker);
       }
     });
   };

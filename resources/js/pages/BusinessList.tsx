@@ -157,7 +157,12 @@ const BusinessList = () => {
         setBusinesses(businessData);
         setPagination((prev) => ({ ...prev, page: 0 }));
       } else {
-        setBusinesses((prev) => [...prev, ...businessData]);
+        // Ensure no duplicate businesses by ID when appending
+        setBusinesses((prev) => {
+          const existingIds = new Set(prev.map(b => b.id));
+          const newBusinesses = businessData.filter(b => !existingIds.has(b.id));
+          return [...prev, ...newBusinesses];
+        });
       }
       console.log('Data yang akan diset ke state:', businessData);
 
@@ -578,8 +583,8 @@ const BusinessList = () => {
         ) : filteredBusinesses.length > 0 ? (
           <>
             <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-8 auto-rows-fr">
-              {filteredBusinesses.map((business) => (
-                <BusinessCard key={business.id} business={business} />
+              {filteredBusinesses.map((business, index) => (
+                <BusinessCard key={`${business.id}-${index}`} business={business} />
               ))}
             </div>
 

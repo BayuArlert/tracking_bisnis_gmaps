@@ -61,7 +61,7 @@ class AuthController extends Controller
         if (Auth::attempt([$field => $credentials['username'], 'password' => $credentials['password']])) {
             $user = Auth::user();
             
-            // Only regenerate session if session is available (web routes)
+            // Only regenerate session if session is available (for web routes)
             if ($request->hasSession()) {
                 $request->session()->regenerate();
             }
