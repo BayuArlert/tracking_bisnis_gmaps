@@ -185,16 +185,20 @@ const BusinessList = () => {
 
   const fetchNewData = async () => {
     try {
-      toast("Mengambil data baru dari Google Maps...");
-      const response = await axios.get(`${API}/businesses/new`);
-      const { fetched, new: newCount } = response.data;
+      toast.loading("Mengambil data baru dari Google Maps...", { duration: 3000 });
+      const response = await axios.get(`${API}/businesses/new?limit_areas=3`);
+      const { fetched, new: newCount, total_processed, areas_scanned } = response.data;
       
-      toast.success(`Berhasil mengambil ${fetched} bisnis. ${newCount} bisnis baru ditambahkan.`);
+      toast.success(
+        `Berhasil! Diproses ${total_processed} tempat dari ${areas_scanned} area. ` +
+        `${newCount} bisnis baru ditambahkan ke database.`
+      );
       
       // Refresh data setelah fetch
       fetchBusinesses(true);
-    } catch (error) {
-      toast.error("Gagal mengambil data baru");
+    } catch (error: any) {
+      const errorMessage = error.response?.data?.error || error.response?.data?.message || "Gagal mengambil data baru";
+      toast.error(errorMessage);
       console.error("Error fetching new data:", error);
     }
   };

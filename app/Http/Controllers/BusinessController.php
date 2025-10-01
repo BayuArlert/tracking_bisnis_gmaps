@@ -274,9 +274,13 @@ class BusinessController extends Controller
 
     public function fetchNew(Request $request)
     {
+        // Increase execution time limit to prevent timeout
+        set_time_limit(300); // 5 minutes
+        
         $request->validate([
             'radius' => 'nullable|integer|min:100|max:50000',
             'area' => 'nullable|string|max:100|regex:/^[a-zA-Z\s]+$/',
+            'limit_areas' => 'nullable|integer|min:1|max:9',
         ]);
 
         $areas = [
@@ -291,10 +295,22 @@ class BusinessController extends Controller
             'Kota Denpasar' => ['lat' => -8.650000, 'lng' => 115.216667],
         ];
 
+        // Limit areas to prevent timeout - default to 3 areas
+        $limitAreas = $request->limit_areas ?? 3;
+        $areas = array_slice($areas, 0, $limitAreas, true);
+
         $radius = $request->radius ?? 3000;
         $key = config('services.gmaps.key');
+        
+        if (empty($key)) {
+            return response()->json([
+                'error' => 'Google Maps API key not configured'
+            ], 500);
+        }
 
         $newBusinesses = [];
+        $totalFetched = 0;
+        $totalProcessed = 0;
 
         foreach ($areas as $areaName => $coords) {
             $lat = $coords['lat'];
@@ -326,6 +342,11 @@ class BusinessController extends Controller
             }
 
             foreach ($places['results'] ?? [] as $place) {
+                $totalProcessed++;
+                
+                // Add small delay to prevent rate limiting
+                usleep(100000); // 0.1 second delay
+                
                 $detailUrl = "https://maps.googleapis.com/maps/api/place/details/json"
                     . "?place_id={$place['place_id']}&fields=name,rating,user_ratings_total,types,"
                     . "formatted_address,geometry,business_status,photos,reviews&key={$key}";
@@ -356,7 +377,7 @@ class BusinessController extends Controller
                 }
 
                 // Validasi data sebelum diproses
-                $validationErrors = $this->validateBusinessData($info);
+                $validationErrors = $this->validateBusinessData($info, $place['place_id']);
                 if (!empty($validationErrors)) {
                     Log::warning("Data validation failed for place {$place['place_id']}: " . implode(', ', $validationErrors));
                     continue;
@@ -402,13 +423,16 @@ class BusinessController extends Controller
 
                 if ($isNew || $indicators['recently_opened']) {
                     $newBusinesses[] = $business;
+                    $totalFetched++;
                 }
             }
         }
 
         return response()->json([
-            'fetched' => count($newBusinesses),
+            'fetched' => $totalFetched,
             'new' => count($newBusinesses),
+            'total_processed' => $totalProcessed,
+            'areas_scanned' => count($areas),
             'businesses' => $newBusinesses,
         ]);
     }
@@ -740,7 +764,7 @@ class BusinessController extends Controller
     /**
      * Validasi data bisnis sebelum disimpan
      */
-    private function validateBusinessData($info): array
+    private function validateBusinessData($info, $placeId = null): array
     {
         $errors = [];
         
@@ -753,7 +777,8 @@ class BusinessController extends Controller
             $errors[] = 'Address is required';
         }
         
-        if (empty($info['place_id'])) {
+        // Use provided place_id or check from info
+        if (empty($placeId) && empty($info['place_id'])) {
             $errors[] = 'Place ID is required';
         }
         
