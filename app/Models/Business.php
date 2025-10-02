@@ -24,7 +24,7 @@ class Business extends Model
 
     protected $casts = [
         'indicators' => 'array',
-        'first_seen' => 'date',
+        'first_seen' => 'datetime',
         'last_fetched' => 'datetime',
     ];
 }

@@ -184,21 +184,32 @@ const BusinessList = () => {
   };
 
   const fetchNewData = async () => {
+    const loadingToast = toast.loading("Mengambil data cafe baru dari Google Maps...", { 
+      duration: Infinity // Toast tidak akan hilang otomatis
+    });
+    
     try {
-      toast.loading("Mengambil data baru dari Google Maps...", { duration: 3000 });
-      const response = await axios.get(`${API}/businesses/new?limit_areas=3`);
-      const { fetched, new: newCount, total_processed, areas_scanned } = response.data;
-      
-      toast.success(
-        `Berhasil! Diproses ${total_processed} tempat dari ${areas_scanned} area. ` +
-        `${newCount} bisnis baru ditambahkan ke database.`
-      );
+      // Gunakan parameter yang spesifik untuk cafe di Kabupaten Tabanan
+      const response = await axios.get(`${API}/businesses/new?area=Kabupaten%20Tabanan`);
+      const { fetched, new: newCount, total_processed, method, total_unique_places, text_search_queries, nearby_search_points } = response.data;
       
       // Refresh data setelah fetch
-      fetchBusinesses(true);
+      await fetchBusinesses(true);
+      
+      // Hapus loading toast dan tampilkan success
+      toast.dismiss(loadingToast);
+      toast.success(
+        `✅ Berhasil! ${method === 'multiple_radius_search' ? 'Multiple Radius Search' : method} - ` +
+        `Diproses ${total_processed} tempat, ${total_unique_places || 'N/A'} unique. ` +
+        `Text Search: ${text_search_queries || 0} queries, Nearby: ${nearby_search_points || 0} points (radius 3-5km). ` +
+        `${newCount} cafe baru ditambahkan ke database.`
+      );
+      
     } catch (error: any) {
+      // Hapus loading toast dan tampilkan error
+      toast.dismiss(loadingToast);
       const errorMessage = error.response?.data?.error || error.response?.data?.message || "Gagal mengambil data baru";
-      toast.error(errorMessage);
+      toast.error(`❌ ${errorMessage}`);
       console.error("Error fetching new data:", error);
     }
   };

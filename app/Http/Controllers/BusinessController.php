@@ -283,23 +283,41 @@ class BusinessController extends Controller
             'limit_areas' => 'nullable|integer|min:1|max:9',
         ]);
 
-        $areas = [
-            'Kabupaten Badung' => ['lat' => -8.650000, 'lng' => 115.216667],
-            'Kabupaten Bangli' => ['lat' => -8.450000, 'lng' => 115.366667],
-            'Kabupaten Buleleng' => ['lat' => -8.150000, 'lng' => 115.050000],
-            'Kabupaten Gianyar' => ['lat' => -8.500000, 'lng' => 115.320000],
-            'Kabupaten Jembrana' => ['lat' => -8.430000, 'lng' => 114.640000],
-            'Kabupaten Karangasem' => ['lat' => -8.350000, 'lng' => 115.560000],
-            'Kabupaten Klungkung' => ['lat' => -8.680000, 'lng' => 115.400000],
-            'Kabupaten Tabanan' => ['lat' => -8.450000, 'lng' => 115.150000],
-            'Kota Denpasar' => ['lat' => -8.650000, 'lng' => 115.216667],
+        // Strategi multiple radius kecil untuk menghindari limit 60 tempat per query
+        $tabananCenter = ['lat' => -8.450000, 'lng' => 115.150000];
+        
+        // Multiple search points dengan radius kecil untuk coverage maksimal
+        $searchPoints = [
+            // Pusat dengan radius kecil
+            ['lat' => -8.450000, 'lng' => 115.150000, 'radius' => 5000, 'name' => 'Tabanan Center'],
+            
+            // Grid search dengan radius 5km untuk menghindari limit
+            ['lat' => -8.420000, 'lng' => 115.150000, 'radius' => 5000, 'name' => 'Tabanan North'],
+            ['lat' => -8.480000, 'lng' => 115.150000, 'radius' => 5000, 'name' => 'Tabanan South'],
+            ['lat' => -8.450000, 'lng' => 115.120000, 'radius' => 5000, 'name' => 'Tabanan West'],
+            ['lat' => -8.450000, 'lng' => 115.180000, 'radius' => 5000, 'name' => 'Tabanan East'],
+            
+            // Kecamatan utama dengan radius kecil
+            ['lat' => -8.430000, 'lng' => 115.180000, 'radius' => 4000, 'name' => 'Penebel'],
+            ['lat' => -8.470000, 'lng' => 115.120000, 'radius' => 4000, 'name' => 'Kerambitan'],
+            ['lat' => -8.480000, 'lng' => 115.140000, 'radius' => 4000, 'name' => 'Kediri'],
+            ['lat' => -8.420000, 'lng' => 115.160000, 'radius' => 4000, 'name' => 'Selemadeg'],
+            ['lat' => -8.460000, 'lng' => 115.190000, 'radius' => 4000, 'name' => 'Baturiti'],
+            
+            // Area tambahan untuk coverage edge cases
+            ['lat' => -8.400000, 'lng' => 115.150000, 'radius' => 3000, 'name' => 'Tabanan Far North'],
+            ['lat' => -8.500000, 'lng' => 115.150000, 'radius' => 3000, 'name' => 'Tabanan Far South'],
+            ['lat' => -8.450000, 'lng' => 115.100000, 'radius' => 3000, 'name' => 'Tabanan Far West'],
+            ['lat' => -8.450000, 'lng' => 115.200000, 'radius' => 3000, 'name' => 'Tabanan Far East'],
         ];
 
-        // Limit areas to prevent timeout - default to 3 areas
-        $limitAreas = $request->limit_areas ?? 3;
-        $areas = array_slice($areas, 0, $limitAreas, true);
-
-        $radius = $request->radius ?? 3000;
+        // Filter area jika ada request spesifik
+        $areas = [];
+        if ($request->filled('area') && str_contains(strtolower($request->area), 'tabanan')) {
+            $areas = $searchPoints;
+        } else {
+            $areas = $searchPoints;
+        }
         $key = config('services.gmaps.key');
         
         if (empty($key)) {
@@ -307,17 +325,67 @@ class BusinessController extends Controller
                 'error' => 'Google Maps API key not configured'
             ], 500);
         }
-
+        
         $newBusinesses = [];
         $totalFetched = 0;
         $totalProcessed = 0;
+        $allPlaces = [];
+        $processedPlaceIds = [];
 
-        foreach ($areas as $areaName => $coords) {
-            $lat = $coords['lat'];
-            $lng = $coords['lng'];
+        // Strategi Text Search untuk mendapatkan lebih banyak cafe di Tabanan
+        if (str_contains(strtolower($request->area ?? ''), 'tabanan')) {
+            Log::info("Adding Text Search for comprehensive coverage in Tabanan");
+            $textSearchQueries = [
+                "cafe in Kabupaten Tabanan",
+                "coffee shop in Kabupaten Tabanan", 
+                "warung kopi in Kabupaten Tabanan",
+                "cafe in Tabanan",
+                "coffee shop in Tabanan",
+                "warung kopi in Tabanan"
+            ];
+            
+            foreach ($textSearchQueries as $query) {
+                $textUrl = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+                . "?query=" . urlencode($query)
+                    . "&type=cafe&key={$key}";
+                
+                try {
+                    $textResponse = Http::withOptions(['verify' => false])
+                    ->timeout(30)
+                        ->get($textUrl);
+                    
+                    if ($textResponse->successful()) {
+                        $textData = $textResponse->json();
+                        if (isset($textData['results'])) {
+                            foreach ($textData['results'] as $place) {
+                                if (!in_array($place['place_id'], $processedPlaceIds)) {
+                                    $allPlaces[] = $place;
+                                    $processedPlaceIds[] = $place['place_id'];
+                                }
+                            }
+                        }
+                    }
+                    sleep(1); // Delay antar query
+            } catch (\Exception $e) {
+                    Log::warning("Text Search failed for query: {$query}");
+                }
+            }
+            Log::info("Text Search found " . count($allPlaces) . " unique places");
+        }
+
+        // Nearby Search dengan multiple radius kecil
+        Log::info("Starting Nearby Search with " . count($areas) . " search points");
+        
+        foreach ($areas as $point) {
+            $lat = $point['lat'];
+            $lng = $point['lng'];
+            $radius = $point['radius'];
+            $pointName = $point['name'];
 
             $url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-                . "?location={$lat},{$lng}&radius={$radius}&key={$key}";
+                . "?location={$lat},{$lng}&radius={$radius}&type=cafe&key={$key}";
+            
+            Log::info("Searching {$pointName} with radius {$radius}m");
 
             try {
                 $response = Http::withOptions(['verify' => false])
@@ -325,72 +393,84 @@ class BusinessController extends Controller
                     ->get($url);
                 
                 if (!$response->successful()) {
-                    Log::warning("Google Places API error for area {$areaName}: " . $response->status());
+                    Log::warning("Google Places API error for {$pointName}: " . $response->status());
                     continue;
                 }
                 
                 $places = $response->json();
                 
                 if (isset($places['error_message'])) {
-                    Log::error("Google Places API error: " . $places['error_message']);
+                    Log::error("Google Places API error for {$pointName}: " . $places['error_message']);
                     continue;
                 }
                 
+                Log::info("Found " . count($places['results'] ?? []) . " places in {$pointName}");
+                
             } catch (\Exception $e) {
-                Log::error("Failed to fetch places for area {$areaName}: " . $e->getMessage());
+                Log::error("Failed to fetch places for {$pointName}: " . $e->getMessage());
                 continue;
             }
 
             foreach ($places['results'] ?? [] as $place) {
+                // Tambahkan ke allPlaces jika belum ada
+                if (!in_array($place['place_id'], $processedPlaceIds)) {
+                    $allPlaces[] = $place;
+                    $processedPlaceIds[] = $place['place_id'];
+                }
+            }
+        }
+
+        // Proses semua places (dari Text Search + Nearby Search)
+        foreach ($allPlaces as $place) {
                 $totalProcessed++;
                 
                 // Add small delay to prevent rate limiting
                 usleep(100000); // 0.1 second delay
                 
-                $detailUrl = "https://maps.googleapis.com/maps/api/place/details/json"
-                    . "?place_id={$place['place_id']}&fields=name,rating,user_ratings_total,types,"
-                    . "formatted_address,geometry,business_status,photos,reviews&key={$key}";
+            $detailUrl = "https://maps.googleapis.com/maps/api/place/details/json"
+                . "?place_id={$place['place_id']}&fields=name,rating,user_ratings_total,types,"
+                . "formatted_address,geometry,business_status,photos,reviews&key={$key}";
 
-                try {
-                    $detailResponse = Http::withOptions(['verify' => false])
-                        ->timeout(30)
-                        ->get($detailUrl);
-                    
-                    if (!$detailResponse->successful()) {
-                        Log::warning("Google Places Details API error for place {$place['place_id']}: " . $detailResponse->status());
-                        continue;
-                    }
-                    
-                    $detail = $detailResponse->json();
-                    
-                    if (isset($detail['error_message'])) {
-                        Log::error("Google Places Details API error: " . $detail['error_message']);
-                        continue;
-                    }
-                    
-                    $info = $detail['result'] ?? null;
-                    if (!$info) continue;
-                    
-                } catch (\Exception $e) {
-                    Log::error("Failed to fetch details for place {$place['place_id']}: " . $e->getMessage());
+            try {
+                $detailResponse = Http::withOptions(['verify' => false])
+                    ->timeout(30)
+                    ->get($detailUrl);
+                
+                if (!$detailResponse->successful()) {
+                    Log::warning("Google Places Details API error for place {$place['place_id']}: " . $detailResponse->status());
                     continue;
                 }
+                
+                $detail = $detailResponse->json();
+                
+                if (isset($detail['error_message'])) {
+                    Log::error("Google Places Details API error: " . $detail['error_message']);
+                    continue;
+                }
+                
+                $info = $detail['result'] ?? null;
+                    if (!$info) continue;
+                
+            } catch (\Exception $e) {
+                Log::error("Failed to fetch details for place {$place['place_id']}: " . $e->getMessage());
+                continue;
+            }
 
                 // Validasi data sebelum diproses
-                $validationErrors = $this->validateBusinessData($info, $place['place_id']);
+            $validationErrors = $this->validateBusinessData($info, $place['place_id']);
                 if (!empty($validationErrors)) {
-                    Log::warning("Data validation failed for place {$place['place_id']}: " . implode(', ', $validationErrors));
+                Log::warning("Data validation failed for place {$place['place_id']}: " . implode(', ', $validationErrors));
                     continue;
                 }
 
                 // Cek duplikasi sebelum membuat record baru
                 $duplicateBusiness = $this->checkForDuplicates($info);
-                if ($duplicateBusiness && $duplicateBusiness->place_id !== $place['place_id']) {
+            if ($duplicateBusiness && $duplicateBusiness->place_id !== $place['place_id']) {
                     Log::info("Duplicate business detected: {$info['name']} - merging with existing record");
                     $business = $duplicateBusiness;
                     $isNew = false;
                 } else {
-                    $business = Business::firstOrNew(['place_id' => $place['place_id']]);
+                $business = Business::firstOrNew(['place_id' => $place['place_id']]);
                     $isNew = false;
                 }
 
@@ -408,7 +488,7 @@ class BusinessController extends Controller
                 
                 $business->fill([
                     'name' => $info['name'],
-                    'category' => $info['types'][0] ?? null, // kategori utama otomatis
+                'category' => $info['types'][0] ?? null, // kategori utama otomatis
                     'address' => $address,
                     'area' => $this->extractAreaFromAddress($address),
                     'lat' => $lat,
@@ -424,15 +504,20 @@ class BusinessController extends Controller
                 if ($isNew || $indicators['recently_opened']) {
                     $newBusinesses[] = $business;
                     $totalFetched++;
-                }
             }
         }
 
         return response()->json([
+            'method' => 'multiple_radius_search',
+            'strategy' => 'Small radius grid search to avoid 60 places limit per query',
             'fetched' => $totalFetched,
             'new' => count($newBusinesses),
             'total_processed' => $totalProcessed,
-            'areas_scanned' => count($areas),
+            'total_unique_places' => count($allPlaces),
+            'search_points_used' => count($areas),
+            'text_search_queries' => 6, // Jumlah queries Text Search
+            'nearby_search_points' => count($areas),
+            'radius_range' => '3-5km per point',
             'businesses' => $newBusinesses,
         ]);
     }
