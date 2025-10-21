@@ -125,3 +125,104 @@ body {
     @apply bg-background text-foreground;
   }
 }
+
+/* Fix dropdown collision issues */
+@layer components {
+  /* Ensure dropdowns have high z-index */
+  [data-radix-popper-content-wrapper] {
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+  }
+  
+  /* Fix select dropdown positioning */
+  [data-radix-select-content] {
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+  }
+  
+  /* Fix select items to be clickable */
+  [data-radix-select-item] {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+  }
+  
+  /* Fix dropdown menu positioning */
+  [data-radix-dropdown-menu-content] {
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+  }
+  
+  /* Prevent browser extension interference */
+  [data-radix-select-viewport] {
+    pointer-events: auto !important;
+  }
+  
+  /* Ensure proper stacking context */
+  .filter-container {
+    position: relative;
+    z-index: 1;
+  }
+  
+  /* Fix BusinessList filter container */
+  .filter-section {
+    position: relative;
+    z-index: 1;
+  }
+  
+  /* Ensure select elements are clickable in BusinessList */
+  .filter-section [data-radix-select-trigger] {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+  }
+  
+  .filter-section [data-radix-select-content] {
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+  }
+  
+  /* Fix Sheet (Drawer) components from browser extension interference */
+  [data-radix-dialog-overlay],
+  [data-radix-dialog-content] {
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+    position: fixed !important;
+  }
+  
+  /* Ensure Sheet content and all children are interactive */
+  [data-radix-dialog-content] * {
+    pointer-events: auto !important;
+  }
+  
+  /* Prevent extension from interfering with drawer buttons and links */
+  [data-radix-dialog-content] button,
+  [data-radix-dialog-content] a,
+  [data-radix-dialog-content] input,
+  [data-radix-dialog-content] select {
+    pointer-events: auto !important;
+    cursor: pointer !important;
+  }
+  
+  /* Extra protection for all Radix UI portals */
+  [data-radix-portal] {
+    z-index: 9999 !important;
+    pointer-events: auto !important;
+  }
+  
+  /* Protect against null parent errors from extensions */
+  [data-radix-portal] *,
+  [data-radix-popper-content-wrapper] *,
+  [data-radix-dialog-overlay] *,
+  [data-radix-dialog-content] * {
+    pointer-events: auto !important;
+    position: relative !important;
+  }
+  
+  /* Responsive dropdown adjustments */
+  @media (max-width: 768px) {
+    [data-radix-select-content],
+    [data-radix-dropdown-menu-content] {
+      max-height: 200px !important;
+      overflow-y: auto !important;
+    }
+  }
+}

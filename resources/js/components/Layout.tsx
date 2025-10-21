@@ -3,6 +3,7 @@ import React, { useContext, useEffect } from "react";
 import { AuthContext } from "../context/AuthContext";
 import Navbar from "./Sidebar";
 import { router } from "@inertiajs/react";
+import ErrorBoundary from "./ErrorBoundary";
 
 interface LayoutProps {
     children: React.ReactNode;
@@ -50,15 +51,17 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     console.log('Layout: Rendering main content');
 
     return (
-        <div className="flex min-h-screen">
-            {/* Fixed Sidebar */}
-            <Navbar />
+        <ErrorBoundary>
+            <div className="flex min-h-screen">
+                {/* Fixed Sidebar */}
+                <Navbar />
 
-            {/* Main content with left margin to compensate for fixed sidebar */}
-            <main className="flex-1 bg-gray-50 ml-56">
-                {children}
-            </main>
-        </div>
+                {/* Main content with left margin to compensate for fixed sidebar */}
+                <main className="flex-1 bg-gray-50 ml-56">
+                    {children}
+                </main>
+            </div>
+        </ErrorBoundary>
     );
 };
 

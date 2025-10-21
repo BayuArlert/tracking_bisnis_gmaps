@@ -1,4 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
+import { MarkerClusterer } from '@googlemaps/markerclusterer';
+import { calculateConvexHull, calculateCentroid, calculateBoundingCircle, formatClusterSummary } from '../lib/convexHull';
+import { cleanAreaName } from '../lib/areaUtils';
 
 interface Business {
   lat: number;
@@ -19,8 +22,6 @@ interface HeatmapProps {
 
 declare global {
   interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    google: any;
     initGoogleMaps: () => void;
   }
 }
@@ -35,84 +36,103 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mapInstance = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const heatmapInstance = useRef<any>(null);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const markersRef = useRef<any[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const markerClustererRef = useRef<any>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const convexHullPolygonRef = useRef<any>(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [showClusters, setShowClusters] = useState(true);
+  const [showConvexHull, setShowConvexHull] = useState(false);
 
   useEffect(() => {
-    // Load Google Maps API
+    // Load Google Maps API with safe DOM access
     const loadGoogleMaps = () => {
-      if (window.google && window.google.maps && window.google.maps.MapTypeId) {
-        setIsLoaded(true);
-        return;
-      }
-
-      const script = document.createElement('script');
-      const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
-      if (!apiKey) {
-        console.error('Google Maps API key not configured. Please set VITE_GOOGLE_MAPS_API_KEY in your .env file');
-        return;
-      }
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=marker,geometry&loading=async&callback=initGoogleMaps`;
-      script.async = true;
-      script.defer = true;
-      script.onerror = () => {
-        console.error('Failed to load Google Maps API');
-        setIsLoaded(false);
-      };
-      
-      // Set global callback
-      (window as unknown as { initGoogleMaps: () => void }).initGoogleMaps = () => {
-        if (window.google && window.google.maps && window.google.maps.MapTypeId) {
+      try {
+        if (window.google && window.google.maps && (window.google.maps as any).MapTypeId) {
           setIsLoaded(true);
-        } else {
-          console.error('Google Maps API not fully loaded');
-          setIsLoaded(false);
+          return;
         }
-      };
-      
-      document.head.appendChild(script);
+
+        const script = document.createElement('script');
+        const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+        if (!apiKey) {
+          console.error('Google Maps API key not configured. Please set VITE_GOOGLE_MAPS_API_KEY in your .env file');
+          return;
+        }
+        script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=marker,geometry&loading=async&callback=initGoogleMaps`;
+        script.async = true;
+        script.defer = true;
+        script.onerror = () => {
+          console.error('Failed to load Google Maps API');
+          setIsLoaded(false);
+        };
+        
+        // Set global callback with error handling
+        (window as unknown as { initGoogleMaps: () => void }).initGoogleMaps = () => {
+          try {
+            if (window.google && window.google.maps && (window.google.maps as any).MapTypeId) {
+              setIsLoaded(true);
+            } else {
+              console.error('Google Maps API not fully loaded');
+              setIsLoaded(false);
+            }
+          } catch (error) {
+            console.error('Error in Google Maps callback:', error);
+            setIsLoaded(false);
+          }
+        };
+
+        // Safe DOM access
+        const head = document.head;
+        if (head && head.appendChild) {
+          head.appendChild(script);
+        }
+      } catch (error) {
+        console.error('Error loading Google Maps API:', error);
+        setIsLoaded(false);
+      }
     };
 
     loadGoogleMaps();
   }, []);
 
   const initializeMap = useCallback(() => {
-    if (!mapRef.current || !window.google || !window.google.maps || !window.google.maps.MapTypeId) {
+    if (!mapRef.current || !window.google || !window.google.maps || !(window.google.maps as any).MapTypeId) {
       console.error('Google Maps API not fully loaded');
       return;
     }
 
     try {
-      // Initialize map - try with mapId first, fallback to regular map with styles
+      // Initialize map with mapId for AdvancedMarkerElement support
+      // Note: When using mapId, styles should be controlled via Cloud Console
+      // not through the styles property to avoid warnings
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mapOptions: any = {
         center: center,
         zoom: zoom,
-        mapTypeId: window.google.maps.MapTypeId?.ROADMAP || 'roadmap'
+        mapTypeId: (window.google.maps as any).MapTypeId?.ROADMAP || 'roadmap',
+        mapId: 'DEMO_MAP_ID', // Required for AdvancedMarkerElement
+        // Removed styles property - use Cloud Console for styling when mapId is present
+        // For styling without mapId, see: https://developers.google.com/maps/documentation/javascript/styling
       };
-
-      // Try to use mapId for AdvancedMarkerElement support
-      if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
-        mapOptions.mapId = 'DEMO_MAP_ID'; // Demo Map ID - works for development
-        // Note: When using mapId, styles are controlled via Google Cloud Console
-      } else {
-        // Fallback to regular map with custom styles
-        mapOptions.styles = [
-          {
-            featureType: "poi",
-            elementType: "labels",
-            stylers: [{ visibility: "off" }]
-          }
-        ];
-      }
 
       mapInstance.current = new window.google.maps.Map(mapRef.current, mapOptions);
 
-    // Clear existing markers
+    // Clear existing markers and clusterer
+    if (markerClustererRef.current) {
+      markerClustererRef.current.clearMarkers();
+      markerClustererRef.current = null;
+    }
+    
     markersRef.current.forEach(marker => marker.setMap(null));
     markersRef.current = [];
+    
+    // Clear convex hull polygon
+    if (convexHullPolygonRef.current) {
+      convexHullPolygonRef.current.setMap(null);
+      convexHullPolygonRef.current = null;
+    }
 
     // Create markers for each business using AdvancedMarkerElement
     businesses.forEach((business) => {
@@ -142,36 +162,48 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
         markerContent.style.transform = 'scale(1)';
       });
 
-      // Try AdvancedMarkerElement first, fallback to regular Marker
+      // Use AdvancedMarkerElement as recommended by Google Maps API
       let marker;
-      if (window.google.maps.marker && window.google.maps.marker.AdvancedMarkerElement) {
-        marker = new window.google.maps.marker.AdvancedMarkerElement({
-          position: { lat: business.lat, lng: business.lng },
-          map: mapInstance.current,
-          title: business.name,
-          content: markerContent
-        });
-      } else {
-        // Fallback to regular Marker
+      try {
+        // Check if AdvancedMarkerElement is available
+        if (window.google?.maps?.marker?.AdvancedMarkerElement) {
+          marker = new (window.google.maps as any).marker.AdvancedMarkerElement({
+            position: { lat: business.lat, lng: business.lng },
+            map: mapInstance.current,
+            title: business.name,
+            content: markerContent
+          });
+        } else {
+          // Fallback to regular Marker with warning
+          console.warn('AdvancedMarkerElement not available, using deprecated Marker. Please update your Google Maps API key with Advanced Markers enabled.');
+          marker = new window.google.maps.Marker({
+            position: { lat: business.lat, lng: business.lng },
+            map: mapInstance.current,
+            title: business.name,
+            icon: {
+              path: (window.google.maps as any).SymbolPath.CIRCLE,
+              scale: 15,
+              fillColor: getMarkerColor(business.category),
+              fillOpacity: 0.8,
+              strokeColor: '#ffffff',
+              strokeWeight: 2
+            },
+            label: {
+              text: getMarkerIcon(business.category),
+              color: '#ffffff',
+              fontSize: '12px',
+              fontWeight: 'bold'
+            }
+          } as any);
+        }
+      } catch (error) {
+        console.error('Error creating marker:', error);
+        // Final fallback
         marker = new window.google.maps.Marker({
           position: { lat: business.lat, lng: business.lng },
           map: mapInstance.current,
-          title: business.name,
-          icon: {
-            path: window.google.maps.SymbolPath.CIRCLE,
-            scale: 15,
-            fillColor: getMarkerColor(business.category),
-            fillOpacity: 0.8,
-            strokeColor: '#ffffff',
-            strokeWeight: 2
-          },
-          label: {
-            text: getMarkerIcon(business.category),
-            color: '#ffffff',
-            fontSize: '12px',
-            fontWeight: 'bold'
-          }
-        });
+          title: business.name
+        } as any);
       }
 
       // Create info window
@@ -180,7 +212,7 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
           <div style="padding: 10px; max-width: 250px;">
             <h3 style="margin: 0 0 8px 0; font-size: 16px; font-weight: bold;">${business.name}</h3>
             <p style="margin: 0 0 4px 0; color: #666; font-size: 14px;">${business.category}</p>
-            <p style="margin: 0 0 4px 0; color: #666; font-size: 14px;">${business.area}</p>
+            <p style="margin: 0 0 4px 0; color: #666; font-size: 14px;">${cleanAreaName(business.area)}</p>
             <div style="display: flex; align-items: center; margin: 4px 0;">
               <span style="color: #fbbf24; margin-right: 4px;">⭐</span>
               <span style="font-weight: bold;">${business.rating || 'N/A'}</span>
@@ -197,39 +229,29 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
       markersRef.current.push(marker);
     });
 
-    // Create density visualization using circles instead of deprecated heatmap
-    const densityCircles = businesses.map(business => {
-      const reviewCount = business.review_count || 0;
-      const radius = Math.max(1000, Math.min(10000, reviewCount * 20)); // Scale radius based on review count
-      const opacity = Math.min(0.6, Math.max(0.1, reviewCount / 100)); // Scale opacity based on review count
-      
-      const circle = new window.google.maps.Circle({
-        strokeColor: '#FF0000',
-        strokeOpacity: 0.8,
-        strokeWeight: 2,
-        fillColor: '#FF0000',
-        fillOpacity: opacity,
+    // Initialize marker clusterer
+    if (showClusters && markersRef.current.length > 0) {
+      markerClustererRef.current = new MarkerClusterer({
         map: mapInstance.current,
-        center: { lat: business.lat, lng: business.lng },
-        radius: radius
+        markers: markersRef.current,
+        // Use default algorithm (no need for SuperClusterAlgorithm)
+        onClusterClick: (event: any, cluster: any, map: any) => {
+          // Get markers in this cluster
+          const clusterMarkers = cluster.markers;
+          const clusterBusinesses = businesses.filter((b, index) => 
+            clusterMarkers.includes(markersRef.current[index])
+          );
+          
+          // Calculate and show convex hull
+          showClusterPreview(clusterBusinesses, map);
+        },
       });
+    }
 
-      return circle;
-    });
-
-    // Store circles for toggling
-    heatmapInstance.current = {
-      circles: densityCircles,
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setMap: (map: any) => {
-        densityCircles.forEach(circle => circle.setMap(map));
-      },
-      getMap: () => densityCircles[0]?.getMap()
-    };
     } catch (error) {
       console.error('Error initializing map:', error);
     }
-  }, [center, zoom, businesses]);
+  }, [center, zoom, businesses, showClusters]);
 
   useEffect(() => {
     if (isLoaded && mapRef.current && businesses.length > 0) {
@@ -279,29 +301,132 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
     return colorMap[category] || '#FFD93D';
   };
 
-  const toggleHeatmap = () => {
-    if (heatmapInstance.current) {
-      const isVisible = heatmapInstance.current.getMap() !== null;
-      heatmapInstance.current.setMap(isVisible ? null : mapInstance.current);
+  const toggleClusters = () => {
+    setShowClusters(!showClusters);
+  };
+
+  const toggleConvexHull = () => {
+    setShowConvexHull(!showConvexHull);
+    if (!showConvexHull && businesses.length > 0) {
+      // Show convex hull for all businesses
+      showClusterPreview(businesses, mapInstance.current);
+    } else if (convexHullPolygonRef.current) {
+      convexHullPolygonRef.current.setMap(null);
+      convexHullPolygonRef.current = null;
     }
   };
 
-  const toggleMarkers = () => {
-    markersRef.current.forEach(marker => {
-      // Handle both AdvancedMarkerElement and regular Marker
-      if (marker && typeof marker.getMap === 'function') {
-        // Regular Marker - has getMap() and setMap() methods
-        const isVisible = marker.getMap() !== null;
-        marker.setMap(isVisible ? null : mapInstance.current);
-      } else if (marker && typeof marker.map !== 'undefined') {
-        // AdvancedMarkerElement - has map property
-        const isVisible = marker.map !== null;
-        marker.map = isVisible ? null : mapInstance.current;
-      } else {
-        // Fallback for other marker types
-        console.warn('Unknown marker type:', marker);
-      }
+  const showClusterPreview = (clusterBusinesses: Business[], map: any) => {
+    if (clusterBusinesses.length < 3) {
+      return; // Need at least 3 points for convex hull
+    }
+
+    // Clear previous convex hull
+    if (convexHullPolygonRef.current) {
+      convexHullPolygonRef.current.setMap(null);
+    }
+
+    // Calculate convex hull
+    const points = clusterBusinesses.map(b => ({ lat: b.lat, lng: b.lng }));
+    const hull = calculateConvexHull(points);
+    const centroid = calculateCentroid(points);
+    const boundingCircle = calculateBoundingCircle(points);
+
+    // Draw convex hull polygon
+    const polygon = new (window.google.maps as any).Polygon({
+      paths: hull,
+      strokeColor: '#3B82F6',
+      strokeOpacity: 0.8,
+      strokeWeight: 2,
+      fillColor: '#3B82F6',
+      fillOpacity: 0.2,
+      map: map,
     });
+
+    convexHullPolygonRef.current = polygon;
+
+    // Add center marker using AdvancedMarkerElement if available
+    let centerMarker;
+    try {
+      if (window.google?.maps?.marker?.AdvancedMarkerElement) {
+        // Create custom marker content for center
+        const centerMarkerContent = document.createElement('div');
+        centerMarkerContent.innerHTML = '📍';
+        centerMarkerContent.style.cssText = `
+          background-color: #EF4444;
+          border: 2px solid #ffffff;
+          border-radius: 50%;
+          width: 20px;
+          height: 20px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        `;
+        
+        centerMarker = new (window.google.maps as any).marker.AdvancedMarkerElement({
+          position: centroid,
+          map: map,
+          content: centerMarkerContent,
+        });
+      } else {
+        // Fallback to regular Marker
+        centerMarker = new window.google.maps.Marker({
+          position: centroid,
+          map: map,
+          icon: {
+            path: (window.google.maps as any).SymbolPath.CIRCLE,
+            scale: 8,
+            fillColor: '#EF4444',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2
+          },
+        } as any);
+      }
+    } catch (error) {
+      console.error('Error creating center marker:', error);
+      // Final fallback
+      centerMarker = new window.google.maps.Marker({
+        position: centroid,
+        map: map,
+      } as any);
+    }
+
+    // Create summary info window
+    const category = clusterBusinesses[0]?.category || 'businesses';
+    const summary = formatClusterSummary(
+      clusterBusinesses.length,
+      category,
+      clusterBusinesses[0]?.area || '',
+      boundingCircle.radius
+    );
+
+    const summaryWindow = new window.google.maps.InfoWindow({
+      content: `
+        <div style="padding: 12px; max-width: 300px;">
+          <h3 style="margin: 0 0 8px 0; font-size: 16px; font-weight: bold; color: #1F2937;">
+            📍 Preview Area
+          </h3>
+          <p style="margin: 0; color: #4B5563; font-size: 14px;">
+            ${summary}
+          </p>
+          <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #E5E7EB;">
+            <p style="margin: 0; font-size: 12px; color: #6B7280;">
+              Jumlah bisnis: <strong>${clusterBusinesses.length}</strong><br>
+              Area coverage: <strong>${(boundingCircle.radius / 1000).toFixed(2)} km radius</strong>
+            </p>
+          </div>
+        </div>
+      `,
+      position: centroid,
+    });
+
+    summaryWindow.open(map);
+
+    // Store for cleanup
+    markersRef.current.push(centerMarker);
   };
 
   if (!isLoaded) {
@@ -329,16 +454,24 @@ const GoogleMapsHeatmap: React.FC<HeatmapProps> = ({
       {/* Map Controls */}
       <div className="absolute top-4 right-4 space-y-2">
         <button
-          onClick={toggleHeatmap}
-          className="bg-white hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg shadow-md text-sm font-medium transition-colors"
+          onClick={toggleClusters}
+          className={`w-full px-3 py-2 rounded-lg shadow-md text-sm font-medium transition-colors ${
+            showClusters 
+              ? 'bg-blue-500 hover:bg-blue-600 text-white' 
+              : 'bg-white hover:bg-gray-50 text-gray-700'
+          }`}
         >
-          🔥 Toggle Density Circles
+          🔵 {showClusters ? 'Clusters ON' : 'Clusters OFF'}
         </button>
         <button
-          onClick={toggleMarkers}
-          className="bg-white hover:bg-gray-50 text-gray-700 px-3 py-2 rounded-lg shadow-md text-sm font-medium transition-colors"
+          onClick={toggleConvexHull}
+          className={`w-full px-3 py-2 rounded-lg shadow-md text-sm font-medium transition-colors ${
+            showConvexHull 
+              ? 'bg-purple-500 hover:bg-purple-600 text-white' 
+              : 'bg-white hover:bg-gray-50 text-gray-700'
+          }`}
         >
-          📍 Toggle Markers
+          📐 {showConvexHull ? 'Preview Area ON' : 'Preview Area OFF'}
         </button>
       </div>
 

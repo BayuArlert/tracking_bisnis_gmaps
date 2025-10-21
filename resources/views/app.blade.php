@@ -13,6 +13,27 @@
         <link rel="preconnect" href="https://fonts.bunny.net">
         <link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600" rel="stylesheet" />
 
+        <!-- Suppress browser extension errors early -->
+        <script>
+            // Early error suppression for browser extensions
+            (function() {
+                window.addEventListener('error', function(event) {
+                    var filename = event.filename || '';
+                    var message = event.message || '';
+                    
+                    // Suppress extension errors
+                    if (filename.includes('content.bundle') || 
+                        filename.includes('content.js') ||
+                        filename.includes('extension://') ||
+                        message.includes('parentElement')) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        return false;
+                    }
+                }, true);
+            })();
+        </script>
+
         @viteReactRefresh
         @vite(['resources/js/app.tsx', "resources/js/pages/{$page['component']}.tsx"])
         @inertiaHead

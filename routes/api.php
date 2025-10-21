@@ -6,6 +6,10 @@ use App\Http\Controllers\BusinessController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\StatisticsController;
 use App\Http\Controllers\NotificationController;
+use App\Http\Controllers\ScrapeController;
+use App\Http\Controllers\AnalyticsController;
+use App\Http\Controllers\ExportController;
+use App\Http\Controllers\RegionController;
 
 // API Authentication routes (for frontend API calls)
 Route::middleware('throttle:5,1')->group(function () {
@@ -75,7 +79,42 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/businesses', [BusinessController::class, 'index']);
     Route::get('/businesses/filter-options', [BusinessController::class, 'getFilterOptions']);
     Route::get('/businesses/update-metadata', [BusinessController::class, 'updateMetadataForExistingData']);
-    Route::get('/export/csv', [BusinessController::class, 'exportCSV']);
+    Route::get('/businesses/preview-area', [BusinessController::class, 'getPreviewArea']);
+    
+    // Scraping routes
+    Route::post('/scrape/start', [ScrapeController::class, 'start']);
+    Route::post('/scrape/new-business', [ScrapeController::class, 'startNewBusinessScraping']);
+    Route::get('/scrape/status/{id}', [ScrapeController::class, 'status']);
+    Route::get('/scrape/sessions', [ScrapeController::class, 'sessions']);
+    Route::get('/scrape/statistics', [ScrapeController::class, 'statistics']);
+    Route::post('/scrape/cancel/{id}', [ScrapeController::class, 'cancel']);
+    Route::get('/scrape/regions', [ScrapeController::class, 'regions']);
+    Route::get('/scrape/categories', [ScrapeController::class, 'categories']);
+    
+    // Analytics routes
+    Route::get('/analytics/trends', [AnalyticsController::class, 'trends']);
+    Route::get('/analytics/hot-zones', [AnalyticsController::class, 'hotZones']);
+    Route::get('/analytics/summary', [AnalyticsController::class, 'summary']);
+    Route::get('/analytics/category-breakdown', [AnalyticsController::class, 'categoryBreakdown']);
+    Route::get('/analytics/area-breakdown', [AnalyticsController::class, 'areaBreakdown']);
+    Route::get('/analytics/age-distribution', [AnalyticsController::class, 'ageDistribution']);
+    Route::get('/analytics/confidence-distribution', [AnalyticsController::class, 'confidenceDistribution']);
+    Route::get('/analytics/trends-per-category', [AnalyticsController::class, 'trendsPerCategory']);
+    Route::get('/analytics/trends-per-kecamatan', [AnalyticsController::class, 'trendsPerKecamatan']);
+    
+    // Export routes
+    Route::get('/export/test-csv', [ExportController::class, 'testCsv']); // Test endpoint
+    Route::get('/export/csv', [ExportController::class, 'csv']);
+    Route::get('/export/json', [ExportController::class, 'json']);
+    Route::get('/export/map-image', [ExportController::class, 'mapImage']);
+    Route::get('/export/options', [ExportController::class, 'options']);
+    
+    // Region routes (for hierarchical filters)
+    Route::get('/regions/kabupaten', [RegionController::class, 'getKabupaten']);
+    Route::get('/regions/kecamatan/{kabupatenName}', [RegionController::class, 'getKecamatan']);
+    Route::get('/regions/desa/{kecamatanId}', [RegionController::class, 'getDesa']);
+    Route::get('/regions/hierarchy', [RegionController::class, 'getHierarchy']);
+    Route::get('/regions/debug-kecamatan/{kabupatenName}', [RegionController::class, 'debugKecamatan']);
     
     // Notification routes
     Route::post('/notifications/weekly-summary', [NotificationController::class, 'sendWeeklySummary']);

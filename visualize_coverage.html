@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bali Scraping Coverage Visualization</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #map {
+            width: 100%;
+            height: 100vh;
+        }
+        .info-panel {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            max-width: 350px;
+        }
+        .info-panel h2 {
+            margin: 0 0 15px 0;
+            font-size: 18px;
+            color: #333;
+        }
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            padding: 8px;
+            background: #f5f5f5;
+            border-radius: 5px;
+        }
+        .stat-label {
+            font-weight: 600;
+            color: #666;
+        }
+        .stat-value {
+            color: #2563eb;
+            font-weight: bold;
+        }
+        .legend {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 2px solid #e5e5e5;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 6px 0;
+        }
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            margin-right: 10px;
+            border: 2px solid rgba(0,0,0,0.3);
+        }
+        .zone-popup {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .zone-popup h3 {
+            margin: 0 0 10px 0;
+            color: #2563eb;
+        }
+        .zone-popup p {
+            margin: 5px 0;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <div class="info-panel">
+        <h2>📍 Bali Scraping Coverage</h2>
+        <div class="stat-item">
+            <span class="stat-label">Total Zones:</span>
+            <span class="stat-value" id="total-zones">-</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Total Kabupaten:</span>
+            <span class="stat-value" id="total-kabupaten">-</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Avg Radius:</span>
+            <span class="stat-value" id="avg-radius">-</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">Est. Coverage:</span>
+            <span class="stat-value">95-100%</span>
+        </div>
+        
+        <div class="legend">
+            <strong>Priority Legend:</strong>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #ef4444;"></div>
+                <span>Priority 1 (Badung)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #f97316;"></div>
+                <span>Priority 2 (Denpasar)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #eab308;"></div>
+                <span>Priority 3 (Gianyar)</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #22c55e;"></div>
+                <span>Priority 4-5</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-color" style="background: #3b82f6;"></div>
+                <span>Priority 6-9</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Bali scraping zones data
+        const zones = [
+            // BADUNG (Priority 1) - Updated for full coverage based on Google Maps boundary
+            {name: 'Badung - Kuta & Seminyak', lat: -8.716667, lng: 115.166667, radius: 8000, priority: 1, kabupaten: 'Badung'},
+            {name: 'Badung - Nusa Dua & Jimbaran', lat: -8.800000, lng: 115.200000, radius: 8000, priority: 1, kabupaten: 'Badung'},
+            {name: 'Badung - Canggu & Berawa', lat: -8.650000, lng: 115.133333, radius: 7000, priority: 1, kabupaten: 'Badung'},
+            {name: 'Badung - Mengwi & Abiansemal', lat: -8.566667, lng: 115.175000, radius: 9000, priority: 1, kabupaten: 'Badung'},
+            {name: 'Badung - Petang & Pegunungan', lat: -8.416667, lng: 115.200000, radius: 10000, priority: 1, kabupaten: 'Badung'},
+            {name: 'Badung - Border Timur & Tengah', lat: -8.666667, lng: 115.200000, radius: 8000, priority: 1, kabupaten: 'Badung'},
+            
+            // DENPASAR (Priority 2)
+            {name: 'Denpasar - Selatan & Timur', lat: -8.675000, lng: 115.233333, radius: 5000, priority: 2, kabupaten: 'Denpasar'},
+            {name: 'Denpasar - Barat & Utara', lat: -8.625000, lng: 115.200000, radius: 5000, priority: 2, kabupaten: 'Denpasar'},
+            
+            // GIANYAR (Priority 3)
+            {name: 'Gianyar - Ubud & Sekitar', lat: -8.500000, lng: 115.266667, radius: 8000, priority: 3, kabupaten: 'Gianyar'},
+            {name: 'Gianyar - Tegallalang & Payangan', lat: -8.425000, lng: 115.275000, radius: 9000, priority: 3, kabupaten: 'Gianyar'},
+            {name: 'Gianyar - Sukawati & Blahbatuh', lat: -8.575000, lng: 115.325000, radius: 7000, priority: 3, kabupaten: 'Gianyar'},
+            {name: 'Gianyar - Tampaksiring', lat: -8.433333, lng: 115.366667, radius: 7000, priority: 3, kabupaten: 'Gianyar'},
+            
+            // TABANAN (Priority 4)
+            {name: 'Tabanan - Kota & Kediri', lat: -8.465000, lng: 115.145000, radius: 7000, priority: 4, kabupaten: 'Tabanan'},
+            {name: 'Tabanan - Selemadeg', lat: -8.430000, lng: 115.133333, radius: 10000, priority: 4, kabupaten: 'Tabanan'},
+            {name: 'Tabanan - Pantai (Tanah Lot)', lat: -8.620833, lng: 115.086667, radius: 8000, priority: 4, kabupaten: 'Tabanan'},
+            {name: 'Tabanan - Penebel & Baturiti', lat: -8.445000, lng: 115.185000, radius: 9000, priority: 4, kabupaten: 'Tabanan'},
+            {name: 'Tabanan - Pupuan & Pegunungan', lat: -8.383333, lng: 115.100000, radius: 10000, priority: 4, kabupaten: 'Tabanan'},
+            
+            // BULELENG (Priority 5)
+            {name: 'Buleleng - Singaraja Pusat', lat: -8.116667, lng: 115.083333, radius: 7000, priority: 5, kabupaten: 'Buleleng'},
+            {name: 'Buleleng - Lovina & Seririt', lat: -8.150000, lng: 115.016667, radius: 10000, priority: 5, kabupaten: 'Buleleng'},
+            {name: 'Buleleng - Gerokgak (Barat)', lat: -8.200000, lng: 114.916667, radius: 12000, priority: 5, kabupaten: 'Buleleng'},
+            {name: 'Buleleng - Sawan & Kubutambahan', lat: -8.091667, lng: 115.133333, radius: 9000, priority: 5, kabupaten: 'Buleleng'},
+            {name: 'Buleleng - Tejakula (Timur)', lat: -8.141667, lng: 115.300000, radius: 10000, priority: 5, kabupaten: 'Buleleng'},
+            {name: 'Buleleng - Busungbiu & Pegunungan', lat: -8.250000, lng: 115.050000, radius: 11000, priority: 5, kabupaten: 'Buleleng'},
+            
+            // KLUNGKUNG (Priority 6)
+            {name: 'Klungkung - Daratan', lat: -8.533333, lng: 115.400000, radius: 7000, priority: 6, kabupaten: 'Klungkung'},
+            {name: 'Klungkung - Nusa Penida', lat: -8.733333, lng: 115.541667, radius: 12000, priority: 6, kabupaten: 'Klungkung'},
+            {name: 'Klungkung - Nusa Lembongan & Ceningan', lat: -8.683333, lng: 115.450000, radius: 5000, priority: 6, kabupaten: 'Klungkung'},
+            
+            // BANGLI (Priority 7)
+            {name: 'Bangli - Kota & Susut', lat: -8.425000, lng: 115.325000, radius: 8000, priority: 7, kabupaten: 'Bangli'},
+            {name: 'Bangli - Kintamani & Danau Batur', lat: -8.250000, lng: 115.375000, radius: 12000, priority: 7, kabupaten: 'Bangli'},
+            {name: 'Bangli - Tembuku', lat: -8.483333, lng: 115.366667, radius: 7000, priority: 7, kabupaten: 'Bangli'},
+            
+            // KARANGASEM (Priority 8)
+            {name: 'Karangasem - Amlapura & Manggis', lat: -8.500000, lng: 115.533333, radius: 8000, priority: 8, kabupaten: 'Karangasem'},
+            {name: 'Karangasem - Candidasa', lat: -8.516667, lng: 115.566667, radius: 7000, priority: 8, kabupaten: 'Karangasem'},
+            {name: 'Karangasem - Amed & Tulamben', lat: -8.341667, lng: 115.616667, radius: 10000, priority: 8, kabupaten: 'Karangasem'},
+            {name: 'Karangasem - Bebandem & Sidemen', lat: -8.458333, lng: 115.466667, radius: 9000, priority: 8, kabupaten: 'Karangasem'},
+            {name: 'Karangasem - Rendang & Gunung Agung', lat: -8.366667, lng: 115.433333, radius: 10000, priority: 8, kabupaten: 'Karangasem'},
+            
+            // JEMBRANA (Priority 9)
+            {name: 'Jembrana - Negara Pusat', lat: -8.350000, lng: 114.616667, radius: 8000, priority: 9, kabupaten: 'Jembrana'},
+            {name: 'Jembrana - Pantai Barat (Medewi)', lat: -8.466667, lng: 114.933333, radius: 10000, priority: 9, kabupaten: 'Jembrana'},
+            {name: 'Jembrana - Pekutatan & Melaya', lat: -8.383333, lng: 114.766667, radius: 9000, priority: 9, kabupaten: 'Jembrana'},
+            {name: 'Jembrana - Mendoyo', lat: -8.400000, lng: 114.683333, radius: 8000, priority: 9, kabupaten: 'Jembrana'},
+        ];
+
+        // Initialize map centered on Bali
+        const map = L.map('map').setView([-8.4095, 115.1889], 10);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19
+        }).addTo(map);
+
+        // Color mapping based on priority
+        function getColor(priority) {
+            switch(priority) {
+                case 1: return '#ef4444'; // red
+                case 2: return '#f97316'; // orange
+                case 3: return '#eab308'; // yellow
+                case 4:
+                case 5: return '#22c55e'; // green
+                default: return '#3b82f6'; // blue
+            }
+        }
+
+        // Calculate statistics
+        const uniqueKabupaten = [...new Set(zones.map(z => z.kabupaten))];
+        const avgRadius = Math.round(zones.reduce((sum, z) => sum + z.radius, 0) / zones.length);
+
+        document.getElementById('total-zones').textContent = zones.length;
+        document.getElementById('total-kabupaten').textContent = uniqueKabupaten.length;
+        document.getElementById('avg-radius').textContent = (avgRadius / 1000).toFixed(1) + ' km';
+
+        // Add circles for each zone
+        zones.forEach(zone => {
+            const circle = L.circle([zone.lat, zone.lng], {
+                color: getColor(zone.priority),
+                fillColor: getColor(zone.priority),
+                fillOpacity: 0.15,
+                radius: zone.radius,
+                weight: 2
+            }).addTo(map);
+
+            // Add popup
+            const popupContent = `
+                <div class="zone-popup">
+                    <h3>${zone.name}</h3>
+                    <p><strong>Kabupaten:</strong> ${zone.kabupaten}</p>
+                    <p><strong>Priority:</strong> ${zone.priority}</p>
+                    <p><strong>Radius:</strong> ${(zone.radius / 1000).toFixed(1)} km</p>
+                    <p><strong>Coordinates:</strong> ${zone.lat.toFixed(4)}, ${zone.lng.toFixed(4)}</p>
+                </div>
+            `;
+            circle.bindPopup(popupContent);
+
+            // Add marker at center
+            L.circleMarker([zone.lat, zone.lng], {
+                color: getColor(zone.priority),
+                fillColor: getColor(zone.priority),
+                fillOpacity: 1,
+                radius: 4,
+                weight: 2
+            }).addTo(map).bindPopup(popupContent);
+        });
+
+        // Add Bali boundary marker (optional)
+        const baliBounds = [
+            [-8.9, 114.4],
+            [-8.0, 114.4],
+            [-8.0, 115.7],
+            [-8.9, 115.7]
+        ];
+        
+        console.log('✅ Coverage visualization loaded');
+        console.log(`📊 Total Zones: ${zones.length}`);
+        console.log(`🏝️ Kabupaten: ${uniqueKabupaten.length}`);
+        console.log(`📏 Average Radius: ${(avgRadius / 1000).toFixed(1)} km`);
+    </script>
+</body>
+</html>
+

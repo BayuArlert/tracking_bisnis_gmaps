@@ -9,22 +9,170 @@ use Carbon\Carbon;
 
 class StatisticsController extends Controller
 {
+    /**
+     * Apply area filter that handles cleaned area names
+     * This matches areas like "Bali" against "Bali 82181", "Bali 82152", etc.
+     */
+    private function applyAreaFilter($query, $area)
+    {
+        if ($area === 'all') {
+            return $query;
+        }
+
+        // Get all original area names that match the cleaned area
+        $originalAreas = $this->getOriginalAreaNames($area);
+        return $query->whereIn('area', $originalAreas);
+    }
+
+    /**
+     * Get original area names that match the cleaned area name
+     * Similar to BusinessController logic
+     */
+    private function getOriginalAreaNames($cleanArea)
+    {
+        $allAreas = Business::select('area')
+            ->distinct()
+            ->whereNotNull('area')
+            ->where('area', '!=', '')
+            ->pluck('area');
+
+        $originalAreas = [];
+        foreach ($allAreas as $area) {
+            if ($this->cleanAreaName($area) === $cleanArea) {
+                $originalAreas[] = $area;
+            }
+        }
+
+        return $originalAreas;
+    }
+
+    /**
+     * Clean area name by removing numeric codes
+     * Based on ACTUAL DATA in database - Same logic as BusinessController
+     */
+    private function cleanAreaName($area)
+    {
+        // Remove numbers and extra spaces from area names
+        // "Bali 80993" -> "Bali"
+        $clean = preg_replace('/\s+\d+/', '', $area);
+        $clean = trim($clean);
+        
+        // Handle specific cases based on ACTUAL DATA in database
+        
+        // If it's just numbers (postal codes), skip
+        if (preg_match('/^\d+$/', $clean)) {
+            return null;
+        }
+        
+        // If contains "Kabupaten Badung", keep as is
+        if (stripos($clean, 'Kabupaten Badung') !== false) {
+            return 'Kabupaten Badung';
+        }
+        
+        // If contains "Jimbaran", keep as is (found in data)
+        if (stripos($clean, 'Jimbaran') !== false) {
+            return 'Jimbaran';
+        }
+        
+        // If contains "Sanur", keep as is (found in data)
+        if (stripos($clean, 'Sanur') !== false) {
+            return 'Sanur';
+        }
+        
+        // If contains "Bali" (without specific area), map to "Bali"
+        if (stripos($clean, 'Bali') !== false) {
+            return 'Bali';
+        }
+        
+        // Explicitly check for all Bali regencies/cities FIRST
+        if (stripos($clean, 'Kabupaten Tabanan') !== false) return 'Kabupaten Tabanan';
+        if (stripos($clean, 'Kabupaten Bangli') !== false) return 'Kabupaten Bangli';
+        if (stripos($clean, 'Kabupaten Buleleng') !== false) return 'Kabupaten Buleleng';
+        if (stripos($clean, 'Kabupaten Gianyar') !== false) return 'Kabupaten Gianyar';
+        if (stripos($clean, 'Kabupaten Karangasem') !== false) return 'Kabupaten Karangasem';
+        if (stripos($clean, 'Kabupaten Klungkung') !== false) return 'Kabupaten Klungkung';
+        if (stripos($clean, 'Kota Denpasar') !== false) return 'Kota Denpasar';
+        
+        // If it's clearly not Bali, return null to filter out
+        $nonBaliAreas = [
+            'Jawa Timur', 'Jakarta', 'Surabaya', 'Bandung', 'Yogyakarta', 
+            'Solo', 'Semarang', 'Malang', 'Medan', 'Palembang',
+            'Makassar', 'Manado', 'Pontianak', 'Balikpapan',
+            'Lombok', 'Flores', 'Sumba', 'Timor', 'Papua',
+            'Kalimantan', 'Sumatra', 'Sulawesi', 'Nusa Tenggara',
+            'West Java', 'Kota Bandung', 'Kota Semarang',
+            'Kabupaten Jember', 'Kabupaten Sayan', 'Kabupaten Sigi'
+        ];
+        
+        foreach ($nonBaliAreas as $nonBali) {
+            if (stripos($clean, $nonBali) !== false) {
+                return null; // Filter out non-Bali areas
+            }
+        }
+        
+        // If it's just "Kabupaten" or "Kota" without specific name, skip
+        if (in_array($clean, ['Kabupaten', 'Kota'])) {
+            return null;
+        }
+        
+        // Default: keep the clean name if it looks reasonable
+        return $clean;
+    }
     public function index(Request $request)
     {
         $period = $request->get('period', 'weekly');
         $category = $request->get('category', 'all');
         $area = $request->get('area', 'all');
+        $kabupaten = $request->get('kabupaten', '');
+        $kecamatan = $request->get('kecamatan', '');
+        $minConfidence = $request->get('min_confidence', 0);
 
         // Base query
         $query = Business::query();
 
-        // Apply filters
-        if ($category !== 'all') {
-            $query->where('category', 'like', '%' . $category . '%');
+        // Apply hierarchical location filters (PRIORITY) - Same logic as BusinessController
+        if (!empty($kabupaten)) {
+            $query->where(function($q) use ($kabupaten) {
+                // Try different formats: "Kabupaten X", "Kota X", "X" (case insensitive)
+                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kabupaten ' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kota ' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ' %']);
+            });
         }
 
-        if ($area !== 'all') {
-            $query->where('area', 'like', '%' . $area . '%');
+        if (!empty($kecamatan)) {
+            $query->where(function($q) use ($kecamatan) {
+                // Try different formats: "Kecamatan X", "Kec. X", "X" (case insensitive)
+                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kecamatan ' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kec. ' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ' %']);
+            });
+        }
+
+        // Apply category filter (support multi-select)
+        if ($category !== 'all' && !empty($category)) {
+            $categories = explode(',', $category);
+            $query->where(function($q) use ($categories) {
+                foreach ($categories as $cat) {
+                    $q->orWhere('category', 'like', '%' . trim($cat) . '%');
+                }
+            });
+        }
+
+        // Apply area filter (fallback if no hierarchical filters)
+        if (empty($kabupaten) && empty($kecamatan)) {
+            $query = $this->applyAreaFilter($query, $area);
+        }
+
+        // Apply confidence threshold filter
+        if ($minConfidence > 0) {
+            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence]);
         }
 
         // Get basic stats
@@ -180,43 +328,79 @@ class StatisticsController extends Controller
         return $mapping[$clean] ?? $clean;
     }
 
-    private function cleanAreaName($area)
-    {
-        // Remove numbers and extra spaces from area names
-        $clean = preg_replace('/\s+\d+/', '', $area);
-        $clean = trim($clean);
-        
-        // Handle specific cases
-        if (strpos($clean, 'Bali') !== false) {
-            return 'Bali';
-        }
-        
-        return $clean;
-    }
 
     public function getHeatmapData(Request $request)
     {
         $category = $request->get('category', 'all');
         $area = $request->get('area', 'all');
-        $period = $request->get('period', 'monthly');
+        $period = $request->get('period', 'all');
+        $minConfidence = $request->get('min_confidence', 0);
+        $kabupaten = $request->get('kabupaten', '');
+        $kecamatan = $request->get('kecamatan', '');
 
         $query = Business::query();
 
-        // Apply filters
-        if ($category !== 'all') {
-            $query->where('category', 'like', '%' . $category . '%');
+        // Apply hierarchical location filters (PRIORITY) - Same logic as BusinessController
+        if (!empty($kabupaten)) {
+            $query->where(function($q) use ($kabupaten) {
+                // Try different formats: "Kabupaten X", "Kota X", "X" (case insensitive)
+                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kabupaten ' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kota ' . strtolower($kabupaten) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ' %']);
+            });
         }
 
-        if ($area !== 'all') {
-            $query->where('area', 'like', '%' . $area . '%');
+        if (!empty($kecamatan)) {
+            $query->where(function($q) use ($kecamatan) {
+                // Try different formats: "Kecamatan X", "Kec. X", "X" (case insensitive)
+                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kecamatan ' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kec. ' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ' %']);
+            });
         }
 
-        // Apply time filter
-        if ($period === 'weekly') {
-            $query->where('first_seen', '>=', now()->subWeek());
-        } elseif ($period === 'monthly') {
-            $query->where('first_seen', '>=', now()->subMonth());
+        // Apply category filter (support multi-select with comma separated)
+        if ($category !== 'all' && !empty($category)) {
+            $categories = explode(',', $category);
+            $query->where(function($q) use ($categories) {
+                foreach ($categories as $cat) {
+                    $q->orWhere('category', 'like', '%' . trim($cat) . '%');
+                }
+            });
         }
+
+        // Apply area filter (fallback if no hierarchical filters)
+        if (empty($kabupaten) && empty($kecamatan)) {
+            $query = $this->applyAreaFilter($query, $area);
+        }
+
+        // Apply confidence threshold filter
+        if ($minConfidence > 0) {
+            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence]);
+        }
+
+        // Apply time filter (only if period is not 'all')
+        // Support both named periods and day counts (30, 60, 90, 180)
+        if ($period === 'weekly' || $period === '7') {
+            $query->where('first_seen', '>=', now()->subDays(7));
+        } elseif ($period === 'monthly' || $period === '30') {
+            $query->where('first_seen', '>=', now()->subDays(30));
+        } elseif ($period === '60') {
+            $query->where('first_seen', '>=', now()->subDays(60));
+        } elseif ($period === 'quarterly' || $period === '90') {
+            $query->where('first_seen', '>=', now()->subDays(90));
+        } elseif ($period === '180') {
+            $query->where('first_seen', '>=', now()->subDays(180));
+        } elseif ($period === 'yearly' || $period === '365') {
+            $query->where('first_seen', '>=', now()->subDays(365));
+        }
+        // If period === 'all', no time filter applied
 
         $businesses = $query->whereNotNull('lat')
             ->whereNotNull('lng')
@@ -224,6 +408,8 @@ class StatisticsController extends Controller
             ->get();
 
         return response()->json([
+            'period' => $period,
+            'total_businesses' => $businesses->count(),
             'businesses' => $businesses->map(function ($business) {
                 return [
                     'lat' => is_numeric($business->lat) ? (float) $business->lat : 0,
@@ -237,4 +423,102 @@ class StatisticsController extends Controller
             }),
         ]);
     }
+
+    /**
+     * Get hot zones (kecamatan with most new businesses)
+     */
+    public function hotZones(Request $request)
+    {
+        $period = (int) $request->get('period', 90);
+        $category = $request->get('category', 'all');
+        $limit = (int) $request->get('limit', 5);
+        
+        $dateFrom = now()->subDays($period);
+        
+        $query = Business::where('first_seen', '>=', $dateFrom);
+        
+        if ($category && $category !== 'all') {
+            $query->where('category', $category);
+        }
+        
+        // Extract kecamatan from area field and group
+        $businesses = $query->get();
+        
+        $zones = [];
+        foreach ($businesses as $business) {
+            $area = $business->area ?? '';
+            
+            // Extract kecamatan from area string (format: "Kecamatan, Kabupaten, Bali")
+            $parts = array_map('trim', explode(',', $area));
+            
+            $kecamatan = 'Unknown';
+            $kabupaten = 'Unknown';
+            
+            // Try to identify kecamatan and kabupaten from parts
+            foreach ($parts as $part) {
+                if (strpos($part, 'Kabupaten') !== false || strpos($part, 'Kota') !== false) {
+                    $kabupaten = $part;
+                } elseif (strpos($part, 'Kec.') !== false) {
+                    $kecamatan = str_replace('Kec. ', '', $part);
+                } elseif (strpos($part, 'Bali') === false && strpos($part, 'Indonesia') === false) {
+                    // Assume it's kecamatan if not Bali/Indonesia
+                    if ($kecamatan === 'Unknown') {
+                        $kecamatan = $part;
+                    }
+                }
+            }
+            
+            $key = "{$kabupaten}|{$kecamatan}";
+            
+            if (!isset($zones[$key])) {
+                $zones[$key] = [
+                    'kabupaten' => $kabupaten,
+                    'kecamatan' => $kecamatan,
+                    'area' => $kecamatan . ', ' . $kabupaten,
+                    'count' => 0,
+                    'category_breakdown' => [],
+                ];
+            }
+            
+            $zones[$key]['count']++;
+            
+            $cat = $business->category ?? 'Unknown';
+            if (!isset($zones[$key]['category_breakdown'][$cat])) {
+                $zones[$key]['category_breakdown'][$cat] = 0;
+            }
+            $zones[$key]['category_breakdown'][$cat]++;
+        }
+        
+        // Convert to array and sort by count
+        $zones = array_values($zones);
+        usort($zones, function($a, $b) {
+            return $b['count'] - $a['count'];
+        });
+        
+        // Take top N
+        $topZones = array_slice($zones, 0, $limit);
+        
+        // Calculate growth percentage (simplified - comparing to total average)
+        $averageCount = count($zones) > 0 ? array_sum(array_column($zones, 'count')) / count($zones) : 0;
+        
+        foreach ($topZones as &$zone) {
+            if ($averageCount > 0) {
+                $zone['growth_percentage'] = round((($zone['count'] - $averageCount) / $averageCount) * 100, 1);
+            } else {
+                $zone['growth_percentage'] = 0;
+            }
+        }
+        
+        return response()->json([
+            'success' => true,
+            'data' => $topZones,
+            'metadata' => [
+                'period' => $period,
+                'category' => $category,
+                'total_zones' => count($zones),
+                'average_per_zone' => round($averageCount, 1)
+            ]
+        ]);
+    }
 }
+

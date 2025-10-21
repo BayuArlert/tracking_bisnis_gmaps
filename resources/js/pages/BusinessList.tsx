@@ -5,7 +5,7 @@ import axios from "axios";
 import toast from "react-hot-toast";
 import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { Input } from "../components/ui/input";
+import { cleanAreaName } from "../lib/areaUtils";
 import {
   Select,
   SelectContent,
@@ -14,6 +14,11 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import Layout from "../components/Layout";
+import HierarchicalLocationFilter from "../components/HierarchicalLocationFilter";
+import PeriodFilter from "../components/PeriodFilter";
+import CategoryMultiSelect from "../components/CategoryMultiSelect";
+import ConfidenceSlider from "../components/ConfidenceSlider";
+import BusinessDetailDrawer from "../components/BusinessDetailDrawer";
 
 // ==== Types ====
 interface Business {
@@ -25,6 +30,7 @@ interface Business {
   rating: number;
   review_count: number;
   phone?: string;
+  website?: string;
   first_seen: string;
   lat: number | string;
   lng: number | string;
@@ -54,19 +60,31 @@ interface Business {
 
 interface ApiResponse {
   data: Business[];
-  // tambahkan field lain jika ada seperti meta, links, dll
+  total: number;
+  count: number;
+  skip: number;
+  limit: number;
 }
 
 interface Pagination {
   page: number;
   limit: number;
   hasMore: boolean;
+  per_page: number;
+  total: number;
 }
 
 interface Filters {
   area: string;
   category: string;
+  categories: string[]; // Multi-select categories
   data_age: string;
+  period: string; // Preset period filter (30/60/90/180 days)
+  customPeriodStart?: string;
+  customPeriodEnd?: string;
+  kabupaten: string | null; // Hierarchical filter
+  kecamatan: string | null; // Hierarchical filter
+  confidenceThreshold: number; // 0-100
   radius: number;
   center_lat?: number;
   center_lng?: number;
@@ -80,17 +98,28 @@ const BusinessList = () => {
   const [filters, setFilters] = useState<Filters>({
     area: "",
     category: "",
+    categories: [], // Multi-select categories
     data_age: "",
+    period: "all", // all, 30, 60, 90, 180 days, custom
+    customPeriodStart: undefined,
+    customPeriodEnd: undefined,
+    kabupaten: null, // Hierarchical location
+    kecamatan: null, // Hierarchical location
+    confidenceThreshold: 60, // Default confidence threshold
     radius: 5000, // Default 5km radius
     center_lat: -8.6500, // Bali center
     center_lng: 115.2167,
   });
   const [useRadiusFilter, setUseRadiusFilter] = useState<boolean>(false);
-  const [searchTerm, setSearchTerm] = useState<string>("");
+  const [selectedBusiness, setSelectedBusiness] = useState<Business | null>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
+  const [isExportingCSV, setIsExportingCSV] = useState(false);
   const [pagination, setPagination] = useState<Pagination>({
-    page: 0,
-    limit: 20,
+    page: 1,
+    limit: 10000, // Fetch up to 10000 records from API (should cover all businesses)
     hasMore: true,
+    per_page: 9, // Display only 9 per page (3x3 grid)
+    total: 0,
   });
   const [filterOptions, setFilterOptions] = useState<{
     areas: string[];
@@ -112,28 +141,50 @@ const BusinessList = () => {
     }
   }, [API]);
 
-  useEffect(() => {
-    fetchFilterOptions();
-  }, [fetchFilterOptions]);
-
-  useEffect(() => {
-    fetchBusinesses();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters]);
-
-  const fetchBusinesses = async (reset: boolean = true) => {
+  const fetchBusinesses = useCallback(async (reset: boolean = true) => {
     try {
       setLoading(true);
+      
+      // Build query parameters - optimized like Statistics page
       const params = new URLSearchParams({
-        skip: (reset ? 0 : pagination.page * pagination.limit).toString(),
+        skip: '0',
         limit: pagination.limit.toString(),
       });
 
+      // Apply filters similar to Statistics page
       if (filters.area && filters.area !== "all") params.append("area", filters.area);
-      if (filters.category && filters.category !== "all")
-        params.append("category", filters.category);
-      if (filters.data_age && filters.data_age !== "all")
-        params.append("data_age", filters.data_age);
+      if (filters.category && filters.category !== "all") params.append("category", filters.category);
+      if (filters.data_age && filters.data_age !== "all") params.append("data_age", filters.data_age);
+      
+      // Hierarchical location filters - same as Statistics
+      if (filters.kabupaten) {
+        params.append("kabupaten", filters.kabupaten);
+        console.log('BusinessList: Adding kabupaten filter:', filters.kabupaten);
+      }
+      if (filters.kecamatan) {
+        params.append("kecamatan", filters.kecamatan);
+        console.log('BusinessList: Adding kecamatan filter:', filters.kecamatan);
+      }
+      
+      // Multi-select categories
+      if (filters.categories.length > 0) {
+        filters.categories.forEach(cat => params.append('categories[]', cat));
+      }
+      
+      // Period filters
+      if (filters.period !== 'all') {
+        if (filters.period === 'custom' && filters.customPeriodStart && filters.customPeriodEnd) {
+          params.append('date_from', filters.customPeriodStart);
+          params.append('date_to', filters.customPeriodEnd);
+        } else if (filters.period !== 'custom') {
+          params.append('period', filters.period);
+        }
+      }
+      
+      // Confidence threshold
+      if (filters.confidenceThreshold > 0) params.append('min_confidence', filters.confidenceThreshold.toString());
+      
+      // Radius filter
       if (useRadiusFilter) {
         params.append("use_radius", "true");
         params.append("radius", filters.radius.toString());
@@ -141,42 +192,49 @@ const BusinessList = () => {
         if (filters.center_lng !== undefined) params.append("center_lng", filters.center_lng.toString());
       }
 
-      console.log('API URL:', `${API}/businesses?${params}`);
-      const response = await axios.get<ApiResponse>(`${API}/businesses?${params}`);
-      console.log('API Response Structure:', {
-        type: typeof response.data,
-        data: response.data,
-        keys: Object.keys(response.data),
-        sampleBusiness: response.data.data?.[0]
-      });
-
-      // Mengambil array businesses dari response
-      const businessData = response.data.data || [];
+      console.log('BusinessList API URL:', `${API}/businesses?${params}`);
+      const url = `${API}/businesses?${params}`;
+      console.log('BusinessList: API URL:', url);
+      console.log('BusinessList: Params:', params.toString());
       
-      if (reset) {
-        setBusinesses(businessData);
-        setPagination((prev) => ({ ...prev, page: 0 }));
-      } else {
-        // Ensure no duplicate businesses by ID when appending
-        setBusinesses((prev) => {
-          const existingIds = new Set(prev.map(b => b.id));
-          const newBusinesses = businessData.filter(b => !existingIds.has(b.id));
-          return [...prev, ...newBusinesses];
-        });
-      }
-      console.log('Data yang akan diset ke state:', businessData);
-
-      setPagination((prev) => ({
-        ...prev,
-        hasMore: businessData.length === pagination.limit,
+      const response = await axios.get<ApiResponse>(url);
+      
+      const businessData = response.data.data || [];
+      const totalFromAPI = response.data.total || businessData.length;
+      
+      setBusinesses(businessData);
+      setPagination((prev) => ({ 
+        ...prev, 
+        page: 1, 
+        total: totalFromAPI,
+        hasMore: businessData.length < totalFromAPI
       }));
+      
+      console.log(`BusinessList: Loaded ${businessData.length} of ${totalFromAPI} businesses`);
+
     } catch (error) {
       toast.error("Gagal memuat data bisnis");
       console.error("Error fetching businesses:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [API, filters, pagination.limit, useRadiusFilter]);
+
+  useEffect(() => {
+    fetchFilterOptions();
+  }, [fetchFilterOptions]);
+
+  useEffect(() => {
+    // Reset pagination when filters change
+    setPagination(prev => ({ ...prev, page: 1 }));
+    
+    // Debounced filter changes to prevent too many API calls
+    const timeoutId = setTimeout(() => {
+      fetchBusinesses();
+    }, 300); // 300ms debounce
+
+    return () => clearTimeout(timeoutId);
+  }, [filters, fetchBusinesses]);
 
   const loadMore = () => {
     setPagination((prev) => ({ ...prev, page: prev.page + 1 }));
@@ -215,34 +273,343 @@ const BusinessList = () => {
   };
 
 
-  const exportCSV = () => {
-    // Direct download approach - simpler and more reliable
-    window.open(`${API}/export/csv`, '_blank');
-    toast.success("Data berhasil diexport ke CSV");
+  const exportCSV = async () => {
+    try {
+      setIsExportingCSV(true);
+      // Show loading toast with progress
+      const loadingToast = toast.loading('Sedang mempersiapkan CSV... (mengambil semua data)');
+      
+      // Build query parameters from current filters
+      const params = new URLSearchParams();
+      
+      // Add all current filters
+      if (filters.area && filters.area !== 'all') params.append('area', filters.area);
+      if (filters.category && filters.category !== 'all') params.append('category', filters.category);
+      if (filters.categories.length > 0) {
+        filters.categories.forEach(cat => params.append('categories[]', cat));
+      }
+      if (filters.data_age && filters.data_age !== 'all') params.append('data_age', filters.data_age);
+      if (filters.period !== 'all') {
+        if (filters.period === 'custom' && filters.customPeriodStart && filters.customPeriodEnd) {
+          params.append('date_from', filters.customPeriodStart);
+          params.append('date_to', filters.customPeriodEnd);
+        } else if (filters.period !== 'custom') {
+          params.append('period', filters.period);
+        }
+      }
+      if (filters.kabupaten) params.append('kabupaten', filters.kabupaten);
+      if (filters.kecamatan) params.append('kecamatan', filters.kecamatan);
+      if (filters.confidenceThreshold > 0) params.append('min_confidence', filters.confidenceThreshold.toString());
+      
+      // Add radius filter if active
+      if (useRadiusFilter && filters.radius && filters.center_lat && filters.center_lng) {
+        params.append('use_radius', 'true');
+        params.append('radius', filters.radius.toString());
+        params.append('center_lat', filters.center_lat.toString());
+        params.append('center_lng', filters.center_lng.toString());
+      }
+      
+      // Use axios for better error handling and headers
+      const response = await axios.get(`${API}/export/csv`, {
+        params: params,
+        responseType: 'blob', // Important for file download
+        headers: {
+          'Accept': 'text/csv, application/csv',
+        },
+        timeout: 30000, // 30 second timeout
+      });
+      
+      // Generate filename with timestamp
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+      const filename = `businesses_export_${timestamp}.csv`;
+      
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/csv' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      
+      // Cleanup
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+      
+      // Dismiss loading and show success
+      toast.dismiss(loadingToast);
+      toast.success(`CSV berhasil diunduh! (${filename}) - Semua data yang sesuai filter`);
+      
+    } catch (error: any) {
+      console.error('Export error:', error);
+      
+      // Show specific error message
+      let errorMessage = 'Gagal mengunduh CSV';
+      if (error.response?.status === 500) {
+        errorMessage = 'Server error - coba lagi nanti';
+      } else if (error.response?.status === 404) {
+        errorMessage = 'Export endpoint tidak ditemukan';
+      } else if (error.code === 'ECONNABORTED') {
+        errorMessage = 'Timeout - data terlalu besar';
+      }
+      
+      toast.error(errorMessage);
+    } finally {
+      setIsExportingCSV(false);
+    }
+  };
+
+  const exportJSON = async () => {
+    try {
+      setIsExportingCSV(true);
+      // Show loading toast with progress (same as CSV)
+      const loadingToast = toast.loading('Sedang mempersiapkan JSON... (mengambil semua data)');
+      
+      // Build query parameters from current filters (same as CSV)
+      const params = new URLSearchParams();
+      
+      // Add all current filters (same as CSV export)
+      if (filters.area && filters.area !== 'all') params.append('area', filters.area);
+      if (filters.category && filters.category !== 'all') params.append('category', filters.category);
+      if (filters.categories.length > 0) {
+        filters.categories.forEach(cat => params.append('categories[]', cat));
+      }
+      if (filters.data_age && filters.data_age !== 'all') params.append('data_age', filters.data_age);
+      if (filters.period !== 'all') {
+        if (filters.period === 'custom' && filters.customPeriodStart && filters.customPeriodEnd) {
+          params.append('date_from', filters.customPeriodStart);
+          params.append('date_to', filters.customPeriodEnd);
+        } else if (filters.period !== 'custom') {
+          params.append('period', filters.period);
+        }
+      }
+      if (filters.kabupaten) params.append('kabupaten', filters.kabupaten);
+      if (filters.kecamatan) params.append('kecamatan', filters.kecamatan);
+      if (filters.confidenceThreshold > 0) params.append('min_confidence', filters.confidenceThreshold.toString());
+      
+      // Add radius filter if active
+      if (useRadiusFilter && filters.radius && filters.center_lat && filters.center_lng) {
+        params.append('use_radius', 'true');
+        params.append('radius', filters.radius.toString());
+        params.append('center_lat', filters.center_lat.toString());
+        params.append('center_lng', filters.center_lng.toString());
+      }
+      
+      // Use axios for better error handling and headers (same as CSV)
+      const response = await axios.get(`${API}/export/json`, {
+        params: params,
+        responseType: 'blob', // Important for file download
+        headers: {
+          'Accept': 'application/json',
+        },
+        timeout: 30000, // 30 second timeout
+      });
+      
+      // Generate filename with timestamp (same as CSV)
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+      const filename = `businesses_export_${timestamp}.json`;
+      
+      // Create download link (same as CSV)
+      const url = window.URL.createObjectURL(new Blob([response.data], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      
+      // Cleanup
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(link);
+      
+      // Dismiss loading and show success (same as CSV)
+      toast.dismiss(loadingToast);
+      toast.success(`JSON berhasil diunduh! (${filename}) - Semua data yang sesuai filter`);
+      
+    } catch (error: any) {
+      console.error('Export error:', error);
+      
+      // Show specific error message (same as CSV)
+      let errorMessage = 'Gagal mengunduh JSON';
+      if (error.response?.status === 500) {
+        errorMessage = 'Server error - coba lagi nanti';
+      } else if (error.response?.status === 404) {
+        errorMessage = 'Export endpoint tidak ditemukan';
+      } else if (error.code === 'ECONNABORTED') {
+        errorMessage = 'Timeout - data terlalu besar';
+      }
+      
+      toast.error(errorMessage);
+    } finally {
+      setIsExportingCSV(false);
+    }
   };
 
   const filteredBusinesses = Array.isArray(businesses) ? businesses.filter(
-    (business) =>
-      business.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      business.address.toLowerCase().includes(searchTerm.toLowerCase())
+    (business) => {
+      
+      // Period filter (based on first_seen date)
+      if (filters.period && filters.period !== 'all' && filters.period !== 'custom') {
+        const days = parseInt(filters.period);
+        const firstSeenDate = new Date(business.first_seen);
+        const cutoffDate = new Date();
+        cutoffDate.setDate(cutoffDate.getDate() - days);
+        
+        if (firstSeenDate < cutoffDate) {
+          return false; // Business is older than the period
+        }
+      }
+      
+      // Custom period filter
+      if (filters.period === 'custom' && filters.customPeriodStart && filters.customPeriodEnd) {
+        const firstSeenDate = new Date(business.first_seen);
+        const startDate = new Date(filters.customPeriodStart);
+        const endDate = new Date(filters.customPeriodEnd);
+        
+        if (firstSeenDate < startDate || firstSeenDate > endDate) {
+          return false;
+        }
+      }
+      
+      // Multi-select categories filter
+      if (filters.categories.length > 0) {
+        const businessCategory = business.category || '';
+        if (!filters.categories.includes(businessCategory)) {
+          return false;
+        }
+      }
+      
+      // Note: Hierarchical location filtering (kabupaten/kecamatan) is handled by backend
+      // No need to filter again in frontend to avoid duplication
+      
+      // Confidence threshold filter
+      if (filters.confidenceThreshold > 0) {
+        const confidence = business.indicators?.new_business_confidence || 0;
+        if (confidence < filters.confidenceThreshold) {
+          return false;
+        }
+      }
+      
+      return true;
+    }
   ) : [];
 
-  // Helper functions to clean display data
-  const cleanAreaName = (area: string) => {
+  // Helper functions to clean display data - Based on ACTUAL DATA
+  const cleanAreaName = (area: string | null | undefined) => {
+    // Handle null/undefined area
+    if (!area) return 'Unknown';
+    
     // Remove numbers and extra spaces from area names
     // "Bali 80993" -> "Bali"
     let clean = area.replace(/\s+\d+/, '');
     clean = clean.trim();
     
-    // Handle specific cases
-    if (clean.includes('Bali')) {
+    // Handle specific cases based on ACTUAL DATA in database
+    
+    // If it's just numbers (postal codes), skip
+    if (/^\d+$/.test(clean)) {
+      return 'Luar Bali';
+    }
+    
+    // If contains "Kabupaten Badung", keep as is
+    if (clean.toLowerCase().includes('kabupaten badung')) {
+      return 'Kabupaten Badung';
+    }
+    
+    // If contains "Kabupaten Tabanan", keep as is
+    if (clean.toLowerCase().includes('kabupaten tabanan')) {
+      return 'Kabupaten Tabanan';
+    }
+    
+    // If contains "Kabupaten Bangli", keep as is
+    if (clean.toLowerCase().includes('kabupaten bangli')) {
+      return 'Kabupaten Bangli';
+    }
+    
+    // If contains "Kabupaten Buleleng", keep as is
+    if (clean.toLowerCase().includes('kabupaten buleleng')) {
+      return 'Kabupaten Buleleng';
+    }
+    
+    // If contains "Kabupaten Gianyar", keep as is
+    if (clean.toLowerCase().includes('kabupaten gianyar')) {
+      return 'Kabupaten Gianyar';
+    }
+    
+    // If contains "Kabupaten Karangasem", keep as is
+    if (clean.toLowerCase().includes('kabupaten karangasem')) {
+      return 'Kabupaten Karangasem';
+    }
+    
+    // If contains "Kabupaten Klungkung", keep as is
+    if (clean.toLowerCase().includes('kabupaten klungkung')) {
+      return 'Kabupaten Klungkung';
+    }
+    
+    // If contains "Kota Denpasar", keep as is
+    if (clean.toLowerCase().includes('kota denpasar')) {
+      return 'Kota Denpasar';
+    }
+    
+    // If contains "Jimbaran", keep as is (found in data)
+    if (clean.toLowerCase().includes('jimbaran')) {
+      return 'Jimbaran';
+    }
+    
+    // If contains "Sanur", keep as is (found in data)
+    if (clean.toLowerCase().includes('sanur')) {
+      return 'Sanur';
+    }
+    
+    // If contains "Bali" (without specific area), map to "Bali"
+    if (clean.toLowerCase().includes('bali')) {
       return 'Bali';
     }
     
+    // If it's clearly not Bali, return "Luar Bali"
+    const nonBaliAreas = [
+      'jawa timur', 'jakarta', 'surabaya', 'bandung', 'yogyakarta', 
+      'solo', 'semarang', 'malang', 'medan', 'palembang',
+      'makassar', 'manado', 'pontianak', 'balikpapan',
+      'lombok', 'flores', 'sumba', 'timor', 'papua',
+      'kalimantan', 'sumatra', 'sulawesi', 'nusa tenggara',
+      'west java', 'kota bandung', 'kota semarang', 'kota denpasar',
+      'kabupaten jember', 'kabupaten sayan', 'kabupaten sigi'
+      // Removed Bali kabupatens: bangli, buleleng, gianyar, karangasem, klungkung, tabanan
+    ];
+    
+    for (const nonBali of nonBaliAreas) {
+      if (clean.toLowerCase().includes(nonBali)) {
+        return 'Luar Bali';
+      }
+    }
+    
+    // If it's just "Kabupaten" or "Kota" without specific name, skip
+    if (['kabupaten', 'kota'].includes(clean.toLowerCase())) {
+      return 'Luar Bali';
+    }
+    
+    // Default: keep the clean name if it looks reasonable
     return clean;
   };
 
-  const cleanCategoryName = (category: string) => {
+  // Helper function to get area icons - Based on ACTUAL DATA
+  const getAreaIcon = (areaName: string) => {
+    const iconMap: { [key: string]: string } = {
+      'Bali': '🏝️',
+      'Kabupaten Badung': '🏝️',
+      'Jimbaran': '🐟',
+      'Sanur': '🌅',
+      'Luar Bali': '🚫',
+    };
+    
+    return iconMap[areaName] || '📍';
+  };
+
+  const cleanCategoryName = (category: string | null | undefined) => {
+    // Handle null/undefined category
+    if (!category) return 'Unknown';
+    
     // Convert snake_case to Title Case
     // "beauty_salon" -> "Beauty Salon"
     let clean = category.replace(/_/g, ' ');
@@ -278,9 +645,19 @@ const BusinessList = () => {
     return 'bg-red-100 text-red-800';
   };
 
+  // ==== Handler for opening detail drawer ====
+  const handleBusinessClick = (business: Business) => {
+    setSelectedBusiness(business);
+    setIsDrawerOpen(true);
+  };
+
   // ==== Subcomponent BusinessCard ====
   const BusinessCard: React.FC<{ business: Business }> = ({ business }) => (
-    <Card className="business-card p-6 h-full flex flex-col bg-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 rounded-2xl" data-testid={`business-${business.id}`}>
+    <Card 
+      className="business-card p-6 h-full flex flex-col bg-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 rounded-2xl cursor-pointer" 
+      data-testid={`business-${business.id}`}
+      onClick={() => handleBusinessClick(business)}
+    >
       {/* Header Section */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex-1 min-w-0">
@@ -390,6 +767,21 @@ const BusinessList = () => {
             </span>
           </div>
         )}
+        
+        {business.website && (
+          <div className="flex items-center justify-between">
+            <span className="text-gray-600">🌐 Website:</span>
+            <a 
+              href={business.website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-medium text-blue-600 hover:text-blue-800 hover:underline truncate max-w-[150px]"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {business.website.replace(/^https?:\/\/(www\.)?/, '').substring(0, 25)}{business.website.length > 30 ? '...' : ''}
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Footer Section */}
@@ -435,80 +827,77 @@ const BusinessList = () => {
             </Button>
             <Button 
               onClick={exportCSV} 
-              className="flex items-center space-x-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg hover:shadow-xl transform transition-all duration-200 hover:-translate-y-0.5"
+              disabled={isExportingCSV}
+              className="flex items-center space-x-2 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white shadow-lg hover:shadow-xl transform transition-all duration-200 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
             >
+              {isExportingCSV ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  <span>Exporting...</span>
+                </>
+              ) : (
+                <>
               ⬇️ <span>Export CSV</span>
+                </>
+              )}
+            </Button>
+            <Button 
+              onClick={exportJSON} 
+              className="flex items-center space-x-2 bg-gradient-to-r from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700 text-white shadow-lg hover:shadow-xl transform transition-all duration-200 hover:-translate-y-0.5"
+            >
+              📦 <span>Export JSON</span>
             </Button>
           </div>
         </div>
 
         {/* Filters */}
-        <Card className="filter-section mb-8 p-8 shadow-lg rounded-2xl">
+        <Card className="filter-section mb-8 p-8 shadow-lg rounded-2xl filter-container">
           <div className="space-y-6">
             <div>
               <h3 className="text-lg font-bold text-gray-900 mb-2">Filter Bisnis</h3>
               <p className="text-sm text-gray-600">Saring bisnis berdasarkan kriteria yang diinginkan</p>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">
-                  Cari Bisnis
-                </label>
-                <Input
-                  type="text"
-                  placeholder="Nama bisnis atau alamat..."
-                  value={searchTerm}
-                  onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                    setSearchTerm(e.target.value)
-                  }
-                  data-testid="search-input"
-                  className="w-full"
-                />
+            {/* Hierarchical Location Filter - Full Width - Same as Statistics */}
+            <div className="bg-white p-4 rounded-lg border border-gray-200 filter-container">
+              <h4 className="text-sm font-semibold text-gray-800 mb-3">📍 Lokasi</h4>
+              <HierarchicalLocationFilter
+                kabupaten={filters.kabupaten || undefined}
+                kecamatan={filters.kecamatan || undefined}
+                onKabupatenChange={(value) => {
+                  console.log('BusinessList - Kabupaten changed to:', value);
+                  setFilters(prev => ({ 
+                    ...prev, 
+                    kabupaten: value, 
+                    kecamatan: null // Reset kecamatan when kabupaten changes
+                  }));
+                }}
+                onKecamatanChange={(value) => {
+                  console.log('BusinessList - Kecamatan changed to:', value);
+                  setFilters(prev => ({ ...prev, kecamatan: value }));
+                }}
+              />
               </div>
               
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Area</label>
-                <Select
-                  value={filters.area || undefined}
-                  onValueChange={(value) => setFilters({ ...filters, area: value || "" })}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Pilih area" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Semua Area</SelectItem>
-                    {filterOptions.areas.map((area) => (
-                      <SelectItem key={area} value={area}>
-                        {area}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+            {/* Grid Layout for Other Filters */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {/* NEW: Multi-select Categories */}
+              <CategoryMultiSelect
+                value={filters.categories}
+                onChange={(categories) => setFilters({ ...filters, categories })}
+              />
+
+              {/* NEW: Period Filter with Presets */}
+              <PeriodFilter
+                value={filters.period}
+                customStart={filters.customPeriodStart}
+                customEnd={filters.customPeriodEnd}
+                onChange={(period, start, end) => 
+                  setFilters({ ...filters, period, customPeriodStart: start, customPeriodEnd: end })
+                }
+              />
               
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">
-                  Kategori
-                </label>
-                <Select
-                  value={filters.category || undefined}
-                  onValueChange={(value) => setFilters({ ...filters, category: value || "" })}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Pilih kategori" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Semua Kategori</SelectItem>
-                    {filterOptions.categories.map((category) => (
-                      <SelectItem key={category} value={category}>
-                        {category}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              
+              {/* Data Age Filter (Keep existing) */}
               <div className="space-y-2">
                 <label className="block text-sm font-semibold text-gray-800">Usia Data</label>
                 <Select
@@ -522,72 +911,68 @@ const BusinessList = () => {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">Semua Usia</SelectItem>
-                    <SelectItem value="ultra_new">Data Baru (kurang dari 1 minggu)</SelectItem>
-                    <SelectItem value="very_new">Data Baru (kurang dari 1 bulan)</SelectItem>
-                    <SelectItem value="new">Data Baru (kurang dari 3 bulan)</SelectItem>
-                    <SelectItem value="recent">Data Recent (kurang dari 12 bulan)</SelectItem>
-                    <SelectItem value="established">Data Established (1-3 tahun)</SelectItem>
-                    <SelectItem value="old">Data Lama (lebih dari 3 tahun)</SelectItem>
+                    <SelectItem value="ultra_new">Ultra Baru (&lt; 1 minggu)</SelectItem>
+                    <SelectItem value="very_new">Sangat Baru (&lt; 1 bulan)</SelectItem>
+                    <SelectItem value="new">Baru (&lt; 3 bulan)</SelectItem>
+                    <SelectItem value="recent">Recent (&lt; 12 bulan)</SelectItem>
+                    <SelectItem value="established">Established (1-3 tahun)</SelectItem>
+                    <SelectItem value="old">Lama (&gt; 3 tahun)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
+              </div>
               
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Radius Pencarian</label>
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id="useRadius"
-                      checked={useRadiusFilter}
-                      onChange={(e) => setUseRadiusFilter(e.target.checked)}
-                      className="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500"
-                    />
-                    <label htmlFor="useRadius" className="text-sm text-gray-700">
-                      Gunakan Filter Radius
-                    </label>
-                  </div>
-                  {useRadiusFilter && (
-                    <>
-                      <input
-                        type="range"
-                        min="1000"
-                        max="50000"
-                        step="1000"
-                        value={filters.radius}
-                        onChange={(e) => setFilters({ ...filters, radius: parseInt(e.target.value) })}
-                        className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
-                      />
-                      <div className="flex justify-between text-xs text-gray-600">
-                        <span>1km</span>
-                        <span className="font-medium">{Math.round(filters.radius / 1000)}km</span>
-                        <span>50km</span>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+            {/* NEW: Confidence Threshold Slider */}
+            <ConfidenceSlider
+              value={filters.confidenceThreshold}
+              onChange={(value) => setFilters({ ...filters, confidenceThreshold: value })}
+              label="Ambang Batas Confidence Score"
+            />
             
-            <div className="flex items-center justify-between pt-4 border-t border-gray-200">
+            {/* Filter Status Indicator - Same as Statistics */}
+            <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl border border-blue-100">
+              <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
                 <span className="text-sm font-medium text-gray-700">
-                  Menampilkan {filteredBusinesses.length} dari {businesses.length} bisnis
+                    Filter Aktif: {filters.kabupaten && `Kabupaten ${filters.kabupaten}`}
+                    {filters.kecamatan && ` > ${filters.kecamatan}`}
+                    {filters.categories.length > 0 && ` | ${filters.categories.length} kategori`}
+                    {filters.period !== 'all' && ` | ${filters.period} hari`}
+                    {filters.confidenceThreshold > 0 && ` | Confidence ≥${filters.confidenceThreshold}%`}
+                  </span>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <span className="text-xs text-gray-600">
+                    Menampilkan {filteredBusinesses.length} dari {businesses.length} bisnis
                 </span>
-              </div>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setFilters({ area: "", category: "", data_age: "", radius: 5000, center_lat: -8.6500, center_lng: 115.2167 });
-                  setUseRadiusFilter(false);
-                  setSearchTerm("");
-                }}
+                  setFilters({ 
+                    area: "", 
+                    category: "", 
+                    categories: [],
+                    data_age: "", 
+                    period: "all",
+                    customPeriodStart: undefined,
+                    customPeriodEnd: undefined,
+                    kabupaten: null,
+                    kecamatan: null,
+                    confidenceThreshold: 60,
+                    radius: 5000, 
+                    center_lat: -8.6500, 
+                    center_lng: 115.2167 
+                  });
+                      setUseRadiusFilter(false);
+                    }}
                 className="text-gray-600 border-gray-300 hover:bg-gray-50 hover:border-gray-400 transition-all duration-200 font-medium"
               >
                 🔄 Reset Filter
               </Button>
+                </div>
+              </div>
             </div>
           </div>
         </Card>
@@ -597,24 +982,70 @@ const BusinessList = () => {
           <p>Memuat data...</p>
         ) : filteredBusinesses.length > 0 ? (
           <>
-            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-8 auto-rows-fr">
-              {filteredBusinesses.map((business, index) => (
-                <BusinessCard key={`${business.id}-${index}`} business={business} />
-              ))}
-            </div>
+            {/* Paginated businesses display */}
+            {(() => {
+              const startIndex = (pagination.page - 1) * pagination.per_page;
+              const endIndex = startIndex + pagination.per_page;
+              const paginatedBusinesses = filteredBusinesses.slice(startIndex, endIndex);
+              
+              return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6 mb-8 auto-rows-fr">
+                  {paginatedBusinesses.map((business, index) => (
+                    <BusinessCard key={`${business.id}-${index}`} business={business} />
+                  ))}
+                </div>
+              );
+            })()}
 
-            {pagination.hasMore && !loading && (
-              <div className="text-center">
-                <Button onClick={loadMore} variant="outline" className="px-8 py-3">
-                  Muat Lebih Banyak
-                </Button>
-              </div>
-            )}
+            {/* Pagination */}
+            {(() => {
+              const totalPages = Math.ceil(filteredBusinesses.length / pagination.per_page);
+              const startIndex = (pagination.page - 1) * pagination.per_page;
+              const endIndex = Math.min(startIndex + pagination.per_page, filteredBusinesses.length);
+              
+              if (totalPages <= 1) return null;
+              
+              return (
+                <div className="flex items-center justify-between mt-6 pt-6 border-t border-gray-200">
+                  <div className="text-sm text-gray-600">
+                    Menampilkan {startIndex + 1}-{endIndex} dari {filteredBusinesses.length} bisnis
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPagination(prev => ({ ...prev, page: prev.page - 1 }))}
+                      disabled={pagination.page === 1}
+                    >
+                      Previous
+                    </Button>
+                    <span className="text-sm text-gray-600">
+                      Halaman {pagination.page} dari {totalPages}
+                    </span>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPagination(prev => ({ ...prev, page: prev.page + 1 }))}
+                      disabled={pagination.page === totalPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         ) : (
           <div className="text-center py-12">Tidak Ada Bisnis Ditemukan</div>
         )}
       </div>
+
+      {/* Business Detail Drawer */}
+      <BusinessDetailDrawer
+        business={selectedBusiness}
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+      />
     </Layout>
   );
 };

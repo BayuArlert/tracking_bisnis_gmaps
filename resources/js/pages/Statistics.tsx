@@ -13,6 +13,24 @@ import {
 } from "../components/ui/select";
 import Layout from "../components/Layout";
 import GoogleMapsHeatmap from "../components/GoogleMapsHeatmap";
+import MultiLineTrendChart from "../components/MultiLineTrendChart";
+import HierarchicalLocationFilter from "../components/HierarchicalLocationFilter";
+import CategoryMultiSelect from "../components/CategoryMultiSelect";
+import ConfidenceSlider from "../components/ConfidenceSlider";
+import { cleanAreaName } from "../lib/areaUtils";
+
+// Helper function to get area icons - Based on ACTUAL DATA
+const getAreaIcon = (areaName: string) => {
+  const iconMap: { [key: string]: string } = {
+    'Bali': '🏝️',
+    'Kabupaten Badung': '🏝️',
+    'Jimbaran': '🐟',
+    'Sanur': '🌅',
+    'Luar Bali': '🚫',
+  };
+  
+  return iconMap[areaName] || '📍';
+};
 
 // Type definitions
 interface TrendData {
@@ -67,9 +85,17 @@ const Statistics: React.FC = () => {
   const [heatmapData, setHeatmapData] = useState<HeatmapBusiness[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [heatmapLoading, setHeatmapLoading] = useState<boolean>(true);
-  const [selectedPeriod, setSelectedPeriod] = useState<'weekly' | 'monthly'>('weekly');
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedPeriod, setSelectedPeriod] = useState<'all' | '7' | '30' | '60' | '90' | '180'>('90'); // Default 90 days as per brief
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]); // Multi-select categories
+  const [selectedCategory, setSelectedCategory] = useState<string>('all'); // For backward compatibility
   const [selectedArea, setSelectedArea] = useState<string>('all');
+  const [selectedKabupaten, setSelectedKabupaten] = useState<string | null>(null);
+  const [selectedKecamatan, setSelectedKecamatan] = useState<string | null>(null);
+  const [confidenceThreshold, setConfidenceThreshold] = useState<number>(40); // Threshold for "new" businesses
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [businessesPerPage] = useState<number>(10);
+  const [categoryTrends, setCategoryTrends] = useState<{ categories: string[], trends: any[] }>({ categories: [], trends: [] });
+  const [kecamatanTrends, setKecamatanTrends] = useState<{ kecamatan: string[], trends: any[] }>({ kecamatan: [], trends: [] });
   const [filterOptions, setFilterOptions] = useState<{
     areas: string[];
     categories: string[];
@@ -101,6 +127,10 @@ const Statistics: React.FC = () => {
         period: selectedPeriod,
         category: selectedCategory,
         area: selectedArea,
+        categories: selectedCategories.length > 0 ? selectedCategories.join(',') : '',
+        kabupaten: selectedKabupaten || '',
+        kecamatan: selectedKecamatan || '',
+        min_confidence: confidenceThreshold.toString(),
       });
 
       const response = await axios.get<StatisticsData>(`${API}/statistics?${params}`);
@@ -111,15 +141,18 @@ const Statistics: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [API, selectedPeriod, selectedCategory, selectedArea]);
+  }, [API, selectedPeriod, selectedCategory, selectedArea, selectedCategories, selectedKabupaten, selectedKecamatan, confidenceThreshold]);
 
   const fetchHeatmapData = useCallback(async (): Promise<void> => {
     try {
       setHeatmapLoading(true);
       const params = new URLSearchParams({
         period: selectedPeriod,
-        category: selectedCategory,
+        category: selectedCategories.length > 0 ? selectedCategories.join(',') : 'all',
         area: selectedArea,
+        kabupaten: selectedKabupaten || '',
+        kecamatan: selectedKecamatan || '',
+        min_confidence: confidenceThreshold.toString(),
       });
 
       const response = await axios.get<{ businesses: HeatmapBusiness[] }>(`${API}/statistics/heatmap?${params}`);
@@ -130,12 +163,45 @@ const Statistics: React.FC = () => {
     } finally {
       setHeatmapLoading(false);
     }
-  }, [API, selectedPeriod, selectedCategory, selectedArea]);
+  }, [API, selectedPeriod, selectedCategories, selectedArea, selectedKabupaten, selectedKecamatan, confidenceThreshold]);
 
+  const fetchTrendCharts = useCallback(async (): Promise<void> => {
+    try {
+      // Fetch category trends
+      const categoryResponse = await axios.get<{ categories: string[], trends: any[] }>(
+        `${API}/analytics/trends-per-category?period=weekly&weeks=12`
+      );
+      setCategoryTrends(categoryResponse.data);
+
+      // Fetch kecamatan trends
+      const kecamatanResponse = await axios.get<{ kecamatan: string[], trends: any[] }>(
+        `${API}/analytics/trends-per-kecamatan?period=weekly&weeks=12&limit=5`
+      );
+      setKecamatanTrends(kecamatanResponse.data);
+    } catch (error: unknown) {
+      console.error('Error fetching trend charts:', error);
+    }
+  }, [API]);
+
+  // Debounced filter changes to prevent too many API calls
   useEffect(() => {
-    fetchStatistics();
-    fetchHeatmapData();
+    const timeoutId = setTimeout(() => {
+      Promise.all([
+        fetchStatistics(),
+        fetchHeatmapData()
+      ]).catch(error => {
+        console.error('Filter update error:', error);
+        toast.error('Gagal memperbarui data');
+      });
+    }, 300); // 300ms debounce (faster response)
+
+    return () => clearTimeout(timeoutId);
   }, [fetchStatistics, fetchHeatmapData]);
+
+  // Fetch trend charts only on initial load
+  useEffect(() => {
+    fetchTrendCharts();
+  }, [fetchTrendCharts]);
 
   const StatCard: React.FC<{ title: string; value: string | number; icon: React.ReactNode; color: string; growth?: number }> = ({ title, value, icon, color, growth }) => (
     <Card className="p-6 bg-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1 rounded-2xl">
@@ -209,7 +275,7 @@ const Statistics: React.FC = () => {
       </div>
       <div className="flex-1 min-w-0">
         <h4 className="font-semibold text-gray-900 truncate">{business.name}</h4>
-        <p className="text-sm text-gray-600 truncate">{business.category} • {business.area}</p>
+        <p className="text-sm text-gray-600 truncate">{business.category} • {cleanAreaName(business.area)}</p>
         <div className="flex items-center space-x-4 text-sm mt-1">
           <span className="flex items-center text-amber-600 font-medium">
             <svg className="w-4 h-4 mr-1 fill-current" viewBox="0 0 20 20">
@@ -331,137 +397,128 @@ const Statistics: React.FC = () => {
                 <p className="text-sm text-gray-600">Saring data berdasarkan periode, kategori, dan area</p>
               </div>
               <div className="flex items-center space-x-2">
-                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
-                <span className="text-sm font-medium text-gray-700">
-                  Data Real-time
-                </span>
+                {loading ? (
+                  <>
+                    <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                    <span className="text-sm font-medium text-gray-700">
+                      Memperbarui data...
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                    <span className="text-sm font-medium text-gray-700">
+                      Data Real-time
+                    </span>
+                  </>
+                )}
               </div>
             </div>
             
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Periode</label>
-                <div className="flex bg-gray-100 rounded-xl p-1">
-                  <button 
-                    onClick={() => setSelectedPeriod('weekly')}
-                    className={`px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-all duration-200 ${
-                      selectedPeriod === 'weekly' 
-                        ? 'text-white bg-blue-600 shadow-md' 
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
+            <div className="space-y-6">
+              {/* Hierarchical Location Filter - Full Width */}
+              <div className="bg-white p-4 rounded-lg border border-gray-200">
+                <h4 className="text-sm font-semibold text-gray-800 mb-3">📍 Lokasi</h4>
+                <HierarchicalLocationFilter
+                  kabupaten={selectedKabupaten || undefined}
+                  kecamatan={selectedKecamatan || undefined}
+                  onKabupatenChange={(value) => {
+                    setSelectedKabupaten(value);
+                    setSelectedKecamatan(null); // Reset kecamatan when kabupaten changes
+                  }}
+                  onKecamatanChange={(value) => setSelectedKecamatan(value)}
+                />
+              </div>
+
+              {/* Other Filters Row */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {/* Multi-select Categories */}
+                <div className="bg-white p-4 rounded-lg border border-gray-200">
+                  <h4 className="text-sm font-semibold text-gray-800 mb-3">🏢 Kategori</h4>
+                  <CategoryMultiSelect
+                    value={selectedCategories}
+                    onChange={(categories) => setSelectedCategories(categories)}
+                  />
+                </div>
+
+                {/* Period Filter */}
+                <div className="bg-white p-4 rounded-lg border border-gray-200">
+                  <h4 className="text-sm font-semibold text-gray-800 mb-3">📅 Periode</h4>
+                  <Select
+                    value={selectedPeriod}
+                    onValueChange={(value) => setSelectedPeriod(value as any)}
                   >
-                    📊 Mingguan
-                  </button>
-                  <button 
-                    onClick={() => setSelectedPeriod('monthly')}
-                    className={`px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition-all duration-200 ${
-                      selectedPeriod === 'monthly' 
-                        ? 'text-white bg-blue-600 shadow-md' 
-                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                    }`}
-                  >
-                    📅 Bulanan
-                  </button>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Pilih periode" />
+                    </SelectTrigger>
+                    <SelectContent className="z-50">
+                      <SelectItem value="all">Semua Data</SelectItem>
+                      <SelectItem value="7">7 Hari Terakhir</SelectItem>
+                      <SelectItem value="30">30 Hari Terakhir</SelectItem>
+                      <SelectItem value="60">60 Hari Terakhir</SelectItem>
+                      <SelectItem value="90">90 Hari Terakhir (3 Bulan)</SelectItem>
+                      <SelectItem value="180">180 Hari Terakhir (6 Bulan)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Confidence Threshold */}
+                <div className="bg-white p-4 rounded-lg border border-gray-200">
+                  <h4 className="text-sm font-semibold text-gray-800 mb-3">🎯 Confidence</h4>
+                  <ConfidenceSlider
+                    value={confidenceThreshold}
+                    onChange={(value) => setConfidenceThreshold(value)}
+                    label="Ambang Batas Confidence"
+                  />
                 </div>
               </div>
-              
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Kategori</label>
-                <Select
-                  value={selectedCategory || undefined}
-                  onValueChange={(value) => setSelectedCategory(value || "")}
+            </div>
+
+            {/* Filter Summary */}
+            <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl border border-blue-100">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                  <span className="text-sm font-medium text-gray-700">
+                    Filter Aktif: {selectedKabupaten && `Kabupaten ${selectedKabupaten}`}
+                    {selectedKecamatan && ` > ${selectedKecamatan}`}
+                    {selectedCategories.length > 0 && ` | ${selectedCategories.length} kategori`}
+                    {selectedPeriod !== 'all' && ` | ${selectedPeriod} hari`}
+                  </span>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedKabupaten(null);
+                    setSelectedKecamatan(null);
+                    setSelectedCategories([]);
+                    setSelectedPeriod('all');
+                    setConfidenceThreshold(40);
+                  }}
+                  className="text-gray-600 border-gray-300 hover:bg-gray-50"
                 >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Pilih kategori" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Semua Kategori</SelectItem>
-                    {filterOptions.categories.map((category) => (
-                      <SelectItem key={category} value={category}>
-                        {category}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              
-              <div className="space-y-2">
-                <label className="block text-sm font-semibold text-gray-800">Area</label>
-                <Select
-                  value={selectedArea || undefined}
-                  onValueChange={(value) => setSelectedArea(value || "")}
-                >
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Pilih area" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Semua Area</SelectItem>
-                    {filterOptions.areas.map((area) => (
-                      <SelectItem key={area} value={area}>
-                        {area}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  🔄 Reset Filter
+                </Button>
               </div>
             </div>
           </div>
         </Card>
 
-        {/* Stats Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-          <StatCard
-            title="Total Bisnis"
-            value={stats.total_businesses.toLocaleString()}
-            color="bg-gradient-to-br from-blue-500 to-blue-600"
-            icon={
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-              </svg>
-            }
-          />
-          <StatCard
-            title="Baru Minggu Ini"
-            value={stats.new_this_week}
-            color="bg-gradient-to-br from-emerald-500 to-green-600"
-            icon={
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            }
-          />
-          <StatCard
-            title="Baru Bulan Ini"
-            value={stats.new_this_month}
-            color="bg-gradient-to-br from-purple-500 to-purple-600"
-            icon={
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-              </svg>
-            }
-          />
-          <StatCard
-            title="Tingkat Pertumbuhan"
-            value={`${stats.growth_rate >= 0 ? '+' : ''}${stats.growth_rate}%`}
-            growth={stats.growth_rate}
-            color="bg-gradient-to-br from-orange-500 to-orange-600"
-            icon={
-              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-              </svg>
-            }
-          />
-        </div>
 
-        {/* Charts Section */}
+        {/* Charts Section - Multi-line Charts seperti yang diminta */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          <TrendChart 
-            data={selectedPeriod === 'weekly' ? stats.weekly_trends : stats.monthly_trends}
-            title={`Tren ${selectedPeriod === 'weekly' ? 'Mingguan' : 'Bulanan'}`}
+          <MultiLineTrendChart
+            data={categoryTrends.trends}
+            lines={categoryTrends.categories}
+            title="Tren Mingguan Penambahan per Kategori"
+            type="category"
           />
-          <TrendChart 
-            data={stats.category_trends}
-            title="Tren per Kategori"
+          <MultiLineTrendChart
+            data={kecamatanTrends.trends}
+            lines={kecamatanTrends.kecamatan}
+            title="Tren Mingguan per Kecamatan (Top 5)"
+            type="kecamatan"
           />
         </div>
 
@@ -509,15 +566,56 @@ const Statistics: React.FC = () => {
               </div>
             </div>
             
-            <div className="space-y-3">
-              {stats.top_businesses.map((business, index) => (
-                <TopBusinessCard 
-                  key={business.id} 
-                  business={business} 
-                  rank={index + 1} 
-                />
-              ))}
-            </div>
+            {/* Pagination for top businesses */}
+            {(() => {
+              const startIndex = (currentPage - 1) * businessesPerPage;
+              const endIndex = startIndex + businessesPerPage;
+              const paginatedBusinesses = stats.top_businesses.slice(startIndex, endIndex);
+              const totalPages = Math.ceil(stats.top_businesses.length / businessesPerPage);
+              
+              return (
+                <>
+                  <div className="space-y-3">
+                    {paginatedBusinesses.map((business, index) => (
+                      <TopBusinessCard 
+                        key={business.id} 
+                        business={business} 
+                        rank={startIndex + index + 1}
+                      />
+                    ))}
+                  </div>
+                  
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between mt-4 pt-4 border-t border-gray-200">
+                      <div className="text-sm text-gray-600">
+                        Menampilkan {startIndex + 1}-{Math.min(endIndex, stats.top_businesses.length)} dari {stats.top_businesses.length} bisnis
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                          disabled={currentPage === 1}
+                        >
+                          Previous
+                        </Button>
+                        <span className="text-sm text-gray-600">
+                          Halaman {currentPage} dari {totalPages}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                          disabled={currentPage === totalPages}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </Card>
       </div>

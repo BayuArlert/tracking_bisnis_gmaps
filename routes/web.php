@@ -47,6 +47,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/statistics', function () {
         return Inertia::render('Statistics');
     })->name('statistics');
+
+    Route::get('/analytics', function () {
+        return Inertia::render('Analytics');
+    })->name('analytics');
 });
 
 // Logout moved to API routes

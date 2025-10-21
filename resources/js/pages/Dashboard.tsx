@@ -6,6 +6,7 @@ import { Card } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import Layout from "../components/Layout";
 import { router } from '@inertiajs/react';
+import { cleanAreaName } from "../lib/areaUtils";
 
 // Type definitions
 interface Business {
@@ -458,7 +459,7 @@ const Dashboard: React.FC = () => {
                         <h4 className="font-semibold text-gray-900 text-sm">{business.name}</h4>
                       </div>
                     </div>
-                    <p className="text-xs text-gray-600 mb-2">{business.category} • {business.area}</p>
+                    <p className="text-xs text-gray-600 mb-2">{business.category} • {cleanAreaName(business.area)}</p>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-1 text-amber-600">
                         <svg className="w-3 h-3 fill-current" viewBox="0 0 20 20">
@@ -500,7 +501,7 @@ const Dashboard: React.FC = () => {
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <h4 className="font-semibold text-gray-900 mb-1 text-base">{business.name}</h4>
-                        <p className="text-sm text-gray-600 mb-3">{business.category} • {business.area}</p>
+                        <p className="text-sm text-gray-600 mb-3">{business.category} • {cleanAreaName(business.area)}</p>
                         <div className="flex items-center space-x-4 text-sm">
                           <span className="flex items-center text-amber-600 font-medium">
                             <svg className="w-4 h-4 mr-1 fill-current" viewBox="0 0 20 20">
