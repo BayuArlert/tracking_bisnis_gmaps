@@ -86,4 +86,30 @@ class CategoryMapping extends Model
     {
         return $query->where('brief_category', $category);
     }
+
+    /**
+     * Strict type matching - cek intersection dengan Google types
+     */
+    public function strictlyMatchesTypes(array $googleTypes): bool
+    {
+        $intersection = array_intersect($this->google_types, $googleTypes);
+        return !empty($intersection);
+    }
+
+    /**
+     * Get dominant keyword from business name for this category
+     */
+    public function hasKeywordInName(string $businessName): bool
+    {
+        $name = strtolower($businessName);
+        $allKeywords = $this->getAllKeywordsAttribute();
+        
+        foreach ($allKeywords as $keyword) {
+            if (strpos($name, strtolower($keyword)) !== false) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
 }

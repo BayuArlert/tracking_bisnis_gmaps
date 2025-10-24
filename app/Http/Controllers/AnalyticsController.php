@@ -7,6 +7,8 @@ use App\Models\Business;
 use App\Models\BusinessSnapshot;
 use App\Models\ScrapeSession;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 
 class AnalyticsController extends Controller
@@ -51,6 +53,59 @@ class AnalyticsController extends Controller
 
         return $originalAreas;
     }
+
+    /**
+     * Apply hierarchical location filters (kabupaten, kecamatan, desa)
+     */
+    private function applyLocationFilters($query, Request $request)
+    {
+        $kabupaten = $request->get('kabupaten', '');
+        $kecamatan = $request->get('kecamatan', '');
+        $desa = $request->get('desa', '');
+
+        // Apply kabupaten filter
+        if (!empty($kabupaten)) {
+            $query->where(function($q) use ($kabupaten) {
+                $kab = strtolower($kabupaten);
+                $q
+                  // Area field exact forms
+                  ->whereRaw('LOWER(area) LIKE ?', ['%kabupaten ' . $kab . '%'])
+                  ->orWhereRaw('LOWER(area) LIKE ?', ['%kota ' . $kab . '%'])
+                  // Address field - comma delimited segment or formal forms
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kabupaten ' . $kab . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kota ' . $kab . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['% ' . $kab . ' regency%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $kab . ', bali%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $kab . ', indonesia%']);
+            });
+        }
+
+        // Apply kecamatan filter
+        if (!empty($kecamatan)) {
+            $query->where(function($q) use ($kecamatan) {
+                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kecamatan ' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kec. ' . strtolower($kecamatan) . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ' %']);
+            });
+        }
+
+        // Apply desa filter - More precise matching
+        if (!empty($desa)) {
+            $query->where(function($q) use ($desa) {
+                // Pattern 1: ", Desa, Kec." - desa appears before kecamatan
+                $q->whereRaw('LOWER(address) LIKE ?', ['%, ' . strtolower($desa) . ', %kec.%'])
+                  // Pattern 2: ", Desa, Kecamatan" - full word kecamatan
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . strtolower($desa) . ', %kecamatan%'])
+                  // Pattern 3: End of address segment (followed by comma and capital letter)
+                  ->orWhereRaw('LOWER(address) REGEXP ?', [', ' . strtolower($desa) . ', [A-Z]']);
+            });
+        }
+
+        return $query;
+    }
     /**
      * Get trend data (weekly/monthly)
      */
@@ -93,14 +148,19 @@ class AnalyticsController extends Controller
 
         $startDate = now()->subDays($period);
 
-        $hotZones = Business::select([
+        $query = Business::select([
                 'area',
                 DB::raw('COUNT(*) as total_businesses'),
                 DB::raw('SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END) as new_businesses'),
                 DB::raw('AVG(JSON_EXTRACT(indicators, "$.new_business_confidence")) as avg_confidence'),
                 DB::raw('AVG(lat) as avg_lat'),
                 DB::raw('AVG(lng) as avg_lng'),
-            ])
+            ]);
+        
+        // Apply location filters
+        $this->applyLocationFilters($query, $request);
+        
+        $hotZones = $query
             ->whereNotNull('area')
             ->where('area', '!=', '')
             ->where('first_seen', '>=', $startDate)
@@ -129,17 +189,24 @@ class AnalyticsController extends Controller
         $period = $request->get('period', 30);
         $startDate = now()->subDays($period);
 
+        // Base query with location filters
+        $baseQuery = Business::query();
+        $this->applyLocationFilters($baseQuery, $request);
+
+        $newQuery = clone $baseQuery;
+        $newQuery->where('first_seen', '>=', $startDate);
+
         $summary = [
-            'total_businesses' => Business::count(),
-            'new_businesses' => Business::where('first_seen', '>=', $startDate)->count(),
-            'recently_opened' => Business::whereJsonContains('indicators->recently_opened', true)
-                ->where('first_seen', '>=', $startDate)
+            'total_businesses' => (clone $baseQuery)->count(),
+            'new_businesses' => (clone $newQuery)->count(),
+            'recently_opened' => (clone $newQuery)
+                ->whereJsonContains('indicators->recently_opened', true)
                 ->count(),
-            'high_confidence_new' => Business::where('first_seen', '>=', $startDate)
+            'high_confidence_new' => (clone $newQuery)
                 ->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") > 60')
                 ->count(),
-            'categories_breakdown' => $this->getCategoriesBreakdown($startDate),
-            'areas_breakdown' => $this->getAreasBreakdown($startDate),
+            'categories_breakdown' => $this->getCategoriesBreakdown($startDate, $request),
+            'areas_breakdown' => $this->getAreasBreakdown($startDate, $request),
             'growth_rate' => $this->calculateGrowthRate($period),
             'api_usage' => $this->getApiUsageSummary($startDate),
         ];
@@ -159,7 +226,7 @@ class AnalyticsController extends Controller
         $period = $request->get('period', 30);
         $startDate = now()->subDays($period);
 
-        $breakdown = $this->getCategoriesBreakdown($startDate);
+        $breakdown = $this->getCategoriesBreakdown($startDate, $request);
 
         return response()->json([
             'period_days' => $period,
@@ -179,7 +246,7 @@ class AnalyticsController extends Controller
         $period = $request->get('period', 30);
         $startDate = now()->subDays($period);
 
-        $breakdown = $this->getAreasBreakdown($startDate);
+        $breakdown = $this->getAreasBreakdown($startDate, $request);
 
         return response()->json([
             'period_days' => $period,
@@ -251,6 +318,32 @@ class AnalyticsController extends Controller
         
         // Fixed order of categories to ensure consistent color mapping
         $categories = ['Café', 'Restoran', 'Sekolah', 'Villa', 'Hotel', 'Popular Spot', 'Lainnya'];
+        
+        // Filter categories to only show those with data in the time period
+        $categoriesWithData = [];
+        foreach ($categories as $category) {
+            $dbCategories = $categoryMapping[$category] ?? [strtolower($category)];
+            $hasData = Business::where('first_seen', '>=', now()->subWeeks($weeks))
+                ->whereIn('category', $dbCategories)
+                ->exists();
+            if ($hasData) {
+                $categoriesWithData[] = $category;
+            }
+        }
+        
+        // Use categories with data, fallback to all if none found
+        $categories = !empty($categoriesWithData) ? $categoriesWithData : $categories;
+        
+        // Map API categories to database categories (handle case differences)
+        $categoryMapping = [
+            'Café' => ['cafe', 'Café', 'CAFE'],
+            'Restoran' => ['Restoran', 'restoran', 'RESTORAN'],
+            'Sekolah' => ['Sekolah', 'sekolah', 'SEKOLAH'],
+            'Villa' => ['Villa', 'villa', 'VILLA'],
+            'Hotel' => ['Hotel', 'hotel', 'HOTEL'],
+            'Popular Spot' => ['Popular Spot', 'popular spot', 'POPULAR SPOT'],
+            'Lainnya' => ['Lainnya', 'lainnya', 'LAINNYA', 'bar', 'bakery']
+        ];
         $trendsData = [];
 
         if ($period === 'weekly') {
@@ -258,16 +351,22 @@ class AnalyticsController extends Controller
             for ($i = $weeks - 1; $i >= 0; $i--) {
                 $startDate = now()->subWeeks($i)->startOfWeek();
                 $endDate = now()->subWeeks($i)->endOfWeek();
-                $weekLabel = $startDate->format('M d');
+                
+                // Include current week if it's not complete yet
+                if ($i === 0) {
+                    $endDate = now(); // Include data up to now
+                    $weekLabel = $startDate->format('M d') . ' (current)';
+                } else {
+                    $weekLabel = $startDate->format('M d');
+                }
 
                 $weekData = ['period' => $weekLabel];
                 
                 foreach ($categories as $category) {
+                    // Handle multiple category variations in database
+                    $dbCategories = $categoryMapping[$category] ?? [strtolower($category)];
                     $count = Business::whereBetween('first_seen', [$startDate, $endDate])
-                        ->where(function($q) use ($category) {
-                            $q->where('category', 'LIKE', '%' . $category . '%')
-                              ->orWhereJsonContains('types', strtolower($category));
-                        })
+                        ->whereIn('category', $dbCategories)
                         ->count();
                     
                     $weekData[$category] = $count;
@@ -286,11 +385,10 @@ class AnalyticsController extends Controller
                 $monthData = ['period' => $monthLabel];
                 
                 foreach ($categories as $category) {
+                    // Handle multiple category variations in database
+                    $dbCategories = $categoryMapping[$category] ?? [strtolower($category)];
                     $count = Business::whereBetween('first_seen', [$startDate, $endDate])
-                        ->where(function($q) use ($category) {
-                            $q->where('category', 'LIKE', '%' . $category . '%')
-                              ->orWhereJsonContains('types', strtolower($category));
-                        })
+                        ->whereIn('category', $dbCategories)
                         ->count();
                     
                     $monthData[$category] = $count;
@@ -298,6 +396,17 @@ class AnalyticsController extends Controller
                 
                 $trendsData[] = $monthData;
             }
+        }
+
+        // Debug data removed for security
+        
+        // Log hanya untuk error atau warning
+        if (empty($trendsData)) {
+            Log::warning("No trends data found", [
+                'period' => $period,
+                'weeks' => $weeks,
+                'categories' => $categories
+            ]);
         }
 
         return response()->json([
@@ -399,12 +508,25 @@ class AnalyticsController extends Controller
             }
         }
 
+        // Debug data removed for security
+        
+        // Log hanya untuk error atau warning
+        if (empty($trendsData)) {
+            Log::warning("No kecamatan trends data found", [
+                'period' => $period,
+                'weeks' => $weeks,
+                'top_kecamatan' => $topKecamatan
+            ]);
+        }
+
         return response()->json([
             'period' => $period,
             'kecamatan' => $topKecamatan, // Already an array
             'trends' => $trendsData,
         ]);
     }
+
+    // Debug endpoint removed for security
 
     /**
      * Get weekly trends
@@ -443,9 +565,9 @@ class AnalyticsController extends Controller
     /**
      * Get categories breakdown
      */
-    private function getCategoriesBreakdown(Carbon $startDate): array
+    private function getCategoriesBreakdown(Carbon $startDate, ?Request $request = null): array
     {
-        return Business::selectRaw('
+        $query = Business::selectRaw('
                 category,
                 COUNT(*) as total,
                 SUM(CASE WHEN first_seen >= ? THEN 1 ELSE 0 END) as new_count,
@@ -455,13 +577,19 @@ class AnalyticsController extends Controller
             ->groupBy('category')
             ->orderBy('new_count', 'desc')
             ->setBindings([$startDate])
-            ->get();
+            ;
+
+        if ($request) {
+            $this->applyLocationFilters($query, $request);
+        }
+
+        return $query->get();
     }
 
     /**
      * Get areas breakdown (with area cleaning)
      */
-    private function getAreasBreakdown(Carbon $startDate): array
+    private function getAreasBreakdown(Carbon $startDate, ?Request $request = null): array
     {
         $rawAreas = Business::selectRaw('
                 area,
@@ -474,7 +602,13 @@ class AnalyticsController extends Controller
             ->groupBy('area')
             ->orderBy('new_count', 'desc')
             ->setBindings([$startDate])
-            ->get();
+            ;
+
+        if ($request) {
+            $this->applyLocationFilters($rawAreas, $request);
+        }
+
+        $rawAreas = $rawAreas->get();
 
         // Clean and aggregate areas
         $cleanedAreas = [];

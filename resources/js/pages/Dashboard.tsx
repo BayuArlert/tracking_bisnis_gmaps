@@ -14,6 +14,7 @@ interface Business {
   name: string;
   category: string;
   area: string;
+  address: string;
   rating: number;
   review_count: number;
   recently_opened?: boolean;
@@ -53,6 +54,33 @@ const Dashboard: React.FC = () => {
   const [notificationEmail, setNotificationEmail] = useState<string>('');
   const [notificationFrequency, setNotificationFrequency] = useState<'weekly' | 'monthly'>('weekly');
   const [sendingNotification, setSendingNotification] = useState<boolean>(false);
+
+  // Display area helper: prefer specific kabupaten/kota parsed from address when area is generic "Bali"
+  const getDisplayArea = (business: Business) => {
+    const areaName = cleanAreaName(business.area);
+    if (areaName === 'Bali' && business.address) {
+      const addr = business.address.toLowerCase();
+      // Try "Kabupaten X" first
+      const kabMatch = addr.match(/kabupaten\s+([a-z\s]+?)(,|$)/i);
+      if (kabMatch && kabMatch[1]) {
+        const kab = kabMatch[1].trim().replace(/\b\w/g, (l: string) => l.toUpperCase());
+        return `Kabupaten ${kab}`;
+      }
+      // Try "Kota X"
+      const kotaMatch = addr.match(/kota\s+([a-z\s]+?)(,|$)/i);
+      if (kotaMatch && kotaMatch[1]) {
+        const kota = kotaMatch[1].trim().replace(/\b\w/g, (l: string) => l.toUpperCase());
+        return `Kota ${kota}`;
+      }
+      // Try "Badung Regency" -> "Kabupaten Badung"
+      const regencyMatch = addr.match(/([a-z\s]+?)\s+regency/i);
+      if (regencyMatch && regencyMatch[1]) {
+        const reg = regencyMatch[1].trim().replace(/\b\w/g, (l: string) => l.toUpperCase());
+        return `Kabupaten ${reg}`;
+      }
+    }
+    return areaName;
+  };
 
   const fetchDashboardStats = useCallback(async (): Promise<void> => {
     try {
@@ -459,7 +487,7 @@ const Dashboard: React.FC = () => {
                         <h4 className="font-semibold text-gray-900 text-sm">{business.name}</h4>
                       </div>
                     </div>
-                    <p className="text-xs text-gray-600 mb-2">{business.category} • {cleanAreaName(business.area)}</p>
+                    <p className="text-xs text-gray-600 mb-2">{business.category} • {getDisplayArea(business)}</p>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-1 text-amber-600">
                         <svg className="w-3 h-3 fill-current" viewBox="0 0 20 20">
@@ -501,7 +529,7 @@ const Dashboard: React.FC = () => {
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
                         <h4 className="font-semibold text-gray-900 mb-1 text-base">{business.name}</h4>
-                        <p className="text-sm text-gray-600 mb-3">{business.category} • {cleanAreaName(business.area)}</p>
+                        <p className="text-sm text-gray-600 mb-3">{business.category} • {getDisplayArea(business)}</p>
                         <div className="flex items-center space-x-4 text-sm">
                           <span className="flex items-center text-amber-600 font-medium">
                             <svg className="w-4 h-4 mr-1 fill-current" viewBox="0 0 20 20">

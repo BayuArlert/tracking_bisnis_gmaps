@@ -55,6 +55,7 @@ class GooglePlacesService
         $nextPageToken = null;
         $pageCount = 0;
         $maxPages = 3; // Google Places API returns max 60 results (3 pages × 20)
+        $actualApiCalls = 0; // NEW: Track actual calls
         
         do {
             // Add pagetoken to options if available
@@ -65,6 +66,10 @@ class GooglePlacesService
             }
             
             $result = $this->textSearch($query, $options);
+            $actualApiCalls++; // Count each API call
+            
+            // Track usage immediately
+            $this->trackApiUsage('text_search_pagination', 1); // NEW
             
             // Merge results
             if (isset($result['results']) && is_array($result['results'])) {
@@ -85,13 +90,15 @@ class GooglePlacesService
         Log::info("Text search pagination completed", [
             'query' => $query,
             'pages_fetched' => $pageCount,
-            'total_results' => count($allResults)
+            'total_results' => count($allResults),
+            'actual_api_calls' => $actualApiCalls
         ]);
         
         return [
             'results' => $allResults,
             'status' => $result['status'] ?? 'OK',
-            'pages_fetched' => $pageCount
+            'pages_fetched' => $pageCount,
+            'actual_api_calls' => $actualApiCalls // NEW: Return actual count
         ];
     }
 
@@ -111,6 +118,65 @@ class GooglePlacesService
         $url = 'https://maps.googleapis.com/maps/api/place/nearbysearch/json';
         
         return $this->makeRequest($url, $params, 'nearby_search');
+    }
+
+    /**
+     * Nearby Search API with Pagination Support
+     * Fetches all pages (up to 60 results) instead of just first 20
+     * 
+     * @param float $lat
+     * @param float $lng
+     * @param int $radius
+     * @param array $options
+     * @return array All results from all pages combined
+     */
+    public function nearbySearchWithPagination(float $lat, float $lng, int $radius, array $options = []): array
+    {
+        $allResults = [];
+        $nextPageToken = null;
+        $pageCount = 0;
+        $maxPages = 3;
+        $actualApiCalls = 0;
+        
+        do {
+            if ($nextPageToken) {
+                $options['pagetoken'] = $nextPageToken;
+                sleep(2);
+            }
+            
+            $result = $this->nearbySearch($lat, $lng, $radius, $options);
+            $actualApiCalls++;
+            
+            // Track usage
+            $this->trackApiUsage('nearby_search_pagination', 1);
+            
+            if (isset($result['results']) && is_array($result['results'])) {
+                $allResults = array_merge($allResults, $result['results']);
+            }
+            
+            $nextPageToken = $result['next_page_token'] ?? null;
+            $pageCount++;
+            
+            if ($nextPageToken) {
+                Log::debug("Fetching nearby search page " . ($pageCount + 1));
+            }
+            
+        } while ($nextPageToken && $pageCount < $maxPages);
+        
+        Log::info("Nearby search pagination completed", [
+            'location' => "{$lat},{$lng}",
+            'radius' => $radius,
+            'pages_fetched' => $pageCount,
+            'total_results' => count($allResults),
+            'actual_api_calls' => $actualApiCalls
+        ]);
+        
+        return [
+            'results' => $allResults,
+            'status' => $result['status'] ?? 'OK',
+            'pages_fetched' => $pageCount,
+            'actual_api_calls' => $actualApiCalls
+        ];
     }
 
     /**
@@ -227,6 +293,7 @@ class GooglePlacesService
     private function makeRequest(string $url, array $params, string $requestType): array
     {
         $attempt = 0;
+        $lastException = null;
         
         while ($attempt < $this->maxRetries) {
             try {
@@ -244,17 +311,27 @@ class GooglePlacesService
                     throw new Exception("Google API error: " . $data['error_message']);
                 }
                 
-                // Track API usage
-                $this->trackApiUsage($requestType);
+                // Track successful call
+                if ($attempt > 0) {
+                    $this->trackApiUsage($requestType . '_retry_success', 1); // NEW
+                }
+                
+                // Calculate and track cost
+                $cost = $this->calculateApiCost($requestType);
+                $this->trackApiUsage($requestType, 1, $cost);
                 
                 return $data;
                 
             } catch (Exception $e) {
+                $lastException = $e;
                 $attempt++;
+                
+                // Track failed attempt
+                $this->trackApiUsage($requestType . '_failed', 1); // NEW
                 
                 if ($attempt >= $this->maxRetries) {
                     Log::error("Google Places API request failed after {$this->maxRetries} attempts: " . $e->getMessage());
-                    throw $e;
+                    throw $lastException;
                 }
                 
                 // Exponential backoff with max delay limit
@@ -303,30 +380,51 @@ class GooglePlacesService
     /**
      * Track API usage for cost monitoring
      */
-    private function trackApiUsage(string $requestType): void
+    protected function trackApiUsage(string $type, int $count = 1, float $cost = 0): void
+    {
+        $today = now()->toDateString();
+        $cacheKey = "api_usage:{$today}";
+        
+        $usage = Cache::get($cacheKey, [
+            'text_search' => 0,
+            'text_search_pagination' => 0, // NEW
+            'place_details' => 0,
+            'nearby_search' => 0,
+            'nearby_search_pagination' => 0, // NEW
+            'failed_requests' => 0, // NEW
+            'retry_attempts' => 0, // NEW
+            'retry_success' => 0, // NEW
+            'total_calls' => 0,
+            'estimated_cost' => 0,
+        ]);
+        
+        $usage[$type] = ($usage[$type] ?? 0) + $count;
+        $usage['total_calls'] += $count;
+        
+        if ($cost > 0) {
+            $usage['estimated_cost'] += $cost;
+        } else {
+            // Calculate cost if not provided
+            $costPerCall = $this->calculateApiCost($type);
+            $usage['estimated_cost'] += $costPerCall * $count;
+        }
+        
+        Cache::put($cacheKey, $usage, now()->addDays(30));
+    }
+
+    private function calculateApiCost(string $type): float
     {
         $costs = [
             'text_search' => 0.032,
-            'nearby_search' => 0.032,
+            'text_search_pagination' => 0.032,
             'place_details' => 0.017,
+            'nearby_search' => 0.032,
+            'nearby_search_pagination' => 0.032,
+            'failed_requests' => 0.025,
+            'retry_attempts' => 0.025,
         ];
         
-        $cost = $costs[$requestType] ?? 0;
-        
-        // Store in cache for cost tracking
-        $key = 'google_places_api_usage_' . date('Y-m-d');
-        $usage = Cache::get($key, [
-            'text_search' => ['count' => 0, 'cost' => 0],
-            'nearby_search' => ['count' => 0, 'cost' => 0],
-            'place_details' => ['count' => 0, 'cost' => 0],
-            'total_cost' => 0,
-        ]);
-        
-        $usage[$requestType]['count']++;
-        $usage[$requestType]['cost'] += $cost;
-        $usage['total_cost'] += $cost;
-        
-        Cache::put($key, $usage, 86400); // 24 hours
+        return $costs[$type] ?? 0.025;
     }
 
     /**

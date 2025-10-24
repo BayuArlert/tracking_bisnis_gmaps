@@ -35,7 +35,6 @@ const Login: React.FC = () => {
   // Redirect to dashboard if user is already logged in
   useEffect(() => {
     if (!isLoading && user) {
-      console.log('Login: User already logged in, redirecting to dashboard');
       router.visit('/dashboard');
     }
   }, [user, isLoading]);

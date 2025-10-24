@@ -84,6 +84,7 @@ interface Filters {
   customPeriodEnd?: string;
   kabupaten: string | null; // Hierarchical filter
   kecamatan: string | null; // Hierarchical filter
+  desa: string | null; // Hierarchical filter
   confidenceThreshold: number; // 0-100
   radius: number;
   center_lat?: number;
@@ -105,6 +106,7 @@ const BusinessList = () => {
     customPeriodEnd: undefined,
     kabupaten: null, // Hierarchical location
     kecamatan: null, // Hierarchical location
+    desa: null, // Hierarchical location
     confidenceThreshold: 60, // Default confidence threshold
     radius: 5000, // Default 5km radius
     center_lat: -8.6500, // Bali center
@@ -159,11 +161,12 @@ const BusinessList = () => {
       // Hierarchical location filters - same as Statistics
       if (filters.kabupaten) {
         params.append("kabupaten", filters.kabupaten);
-        console.log('BusinessList: Adding kabupaten filter:', filters.kabupaten);
       }
       if (filters.kecamatan) {
         params.append("kecamatan", filters.kecamatan);
-        console.log('BusinessList: Adding kecamatan filter:', filters.kecamatan);
+      }
+      if (filters.desa) {
+        params.append("desa", filters.desa);
       }
       
       // Multi-select categories
@@ -474,7 +477,11 @@ const BusinessList = () => {
       // Multi-select categories filter
       if (filters.categories.length > 0) {
         const businessCategory = business.category || '';
-        if (!filters.categories.includes(businessCategory)) {
+        // Case-insensitive comparison
+        const normalizedBusinessCategory = businessCategory.toLowerCase();
+        const normalizedFilterCategories = filters.categories.map(cat => cat.toLowerCase());
+        
+        if (!normalizedFilterCategories.includes(normalizedBusinessCategory)) {
           return false;
         }
       }
@@ -494,103 +501,31 @@ const BusinessList = () => {
     }
   ) : [];
 
-  // Helper functions to clean display data - Based on ACTUAL DATA
-  const cleanAreaName = (area: string | null | undefined) => {
-    // Handle null/undefined area
-    if (!area) return 'Unknown';
-    
-    // Remove numbers and extra spaces from area names
-    // "Bali 80993" -> "Bali"
-    let clean = area.replace(/\s+\d+/, '');
-    clean = clean.trim();
-    
-    // Handle specific cases based on ACTUAL DATA in database
-    
-    // If it's just numbers (postal codes), skip
-    if (/^\d+$/.test(clean)) {
-      return 'Luar Bali';
-    }
-    
-    // If contains "Kabupaten Badung", keep as is
-    if (clean.toLowerCase().includes('kabupaten badung')) {
-      return 'Kabupaten Badung';
-    }
-    
-    // If contains "Kabupaten Tabanan", keep as is
-    if (clean.toLowerCase().includes('kabupaten tabanan')) {
-      return 'Kabupaten Tabanan';
-    }
-    
-    // If contains "Kabupaten Bangli", keep as is
-    if (clean.toLowerCase().includes('kabupaten bangli')) {
-      return 'Kabupaten Bangli';
-    }
-    
-    // If contains "Kabupaten Buleleng", keep as is
-    if (clean.toLowerCase().includes('kabupaten buleleng')) {
-      return 'Kabupaten Buleleng';
-    }
-    
-    // If contains "Kabupaten Gianyar", keep as is
-    if (clean.toLowerCase().includes('kabupaten gianyar')) {
-      return 'Kabupaten Gianyar';
-    }
-    
-    // If contains "Kabupaten Karangasem", keep as is
-    if (clean.toLowerCase().includes('kabupaten karangasem')) {
-      return 'Kabupaten Karangasem';
-    }
-    
-    // If contains "Kabupaten Klungkung", keep as is
-    if (clean.toLowerCase().includes('kabupaten klungkung')) {
-      return 'Kabupaten Klungkung';
-    }
-    
-    // If contains "Kota Denpasar", keep as is
-    if (clean.toLowerCase().includes('kota denpasar')) {
-      return 'Kota Denpasar';
-    }
-    
-    // If contains "Jimbaran", keep as is (found in data)
-    if (clean.toLowerCase().includes('jimbaran')) {
-      return 'Jimbaran';
-    }
-    
-    // If contains "Sanur", keep as is (found in data)
-    if (clean.toLowerCase().includes('sanur')) {
-      return 'Sanur';
-    }
-    
-    // If contains "Bali" (without specific area), map to "Bali"
-    if (clean.toLowerCase().includes('bali')) {
-      return 'Bali';
-    }
-    
-    // If it's clearly not Bali, return "Luar Bali"
-    const nonBaliAreas = [
-      'jawa timur', 'jakarta', 'surabaya', 'bandung', 'yogyakarta', 
-      'solo', 'semarang', 'malang', 'medan', 'palembang',
-      'makassar', 'manado', 'pontianak', 'balikpapan',
-      'lombok', 'flores', 'sumba', 'timor', 'papua',
-      'kalimantan', 'sumatra', 'sulawesi', 'nusa tenggara',
-      'west java', 'kota bandung', 'kota semarang', 'kota denpasar',
-      'kabupaten jember', 'kabupaten sayan', 'kabupaten sigi'
-      // Removed Bali kabupatens: bangli, buleleng, gianyar, karangasem, klungkung, tabanan
-    ];
-    
-    for (const nonBali of nonBaliAreas) {
-      if (clean.toLowerCase().includes(nonBali)) {
-        return 'Luar Bali';
+  // Display area helper: prefer specific kabupaten/kota parsed from address when area is generic "Bali"
+  const getDisplayArea = (business: Business) => {
+    const areaName = cleanAreaName(business.area);
+    if (areaName === 'Bali' && business.address) {
+      const addr = business.address.toLowerCase();
+      // Try "Kabupaten X" first
+      const kabMatch = addr.match(/kabupaten\s+([a-z\s]+?)(,|$)/i);
+      if (kabMatch && kabMatch[1]) {
+        const kab = kabMatch[1].trim().replace(/\b\w/g, (l) => l.toUpperCase());
+        return `Kabupaten ${kab}`;
+      }
+      // Try "Kota X"
+      const kotaMatch = addr.match(/kota\s+([a-z\s]+?)(,|$)/i);
+      if (kotaMatch && kotaMatch[1]) {
+        const kota = kotaMatch[1].trim().replace(/\b\w/g, (l) => l.toUpperCase());
+        return `Kota ${kota}`;
+      }
+      // Try "Badung Regency" -> "Kabupaten Badung"
+      const regencyMatch = addr.match(/([a-z\s]+?)\s+regency/i);
+      if (regencyMatch && regencyMatch[1]) {
+        const reg = regencyMatch[1].trim().replace(/\b\w/g, (l) => l.toUpperCase());
+        return `Kabupaten ${reg}`;
       }
     }
-    
-    // If it's just "Kabupaten" or "Kota" without specific name, skip
-    if (['kabupaten', 'kota'].includes(clean.toLowerCase())) {
-      return 'Luar Bali';
-    }
-    
-    // Default: keep the clean name if it looks reasonable
-    return clean;
+    return areaName;
   };
 
   // Helper function to get area icons - Based on ACTUAL DATA
@@ -667,7 +602,7 @@ const BusinessList = () => {
               {cleanCategoryName(business.category)}
             </span>
             <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-              {cleanAreaName(business.area)}
+              {getDisplayArea(business)}
             </span>
           </div>
           <p className="text-sm text-gray-600 mb-3 line-clamp-2 break-words">{business.address}</p>
@@ -864,17 +799,27 @@ const BusinessList = () => {
               <HierarchicalLocationFilter
                 kabupaten={filters.kabupaten || undefined}
                 kecamatan={filters.kecamatan || undefined}
+                desa={filters.desa || undefined}
                 onKabupatenChange={(value) => {
                   console.log('BusinessList - Kabupaten changed to:', value);
                   setFilters(prev => ({ 
                     ...prev, 
                     kabupaten: value, 
-                    kecamatan: null // Reset kecamatan when kabupaten changes
+                    kecamatan: null, // Reset kecamatan when kabupaten changes
+                    desa: null // Reset desa when kabupaten changes
                   }));
                 }}
                 onKecamatanChange={(value) => {
                   console.log('BusinessList - Kecamatan changed to:', value);
-                  setFilters(prev => ({ ...prev, kecamatan: value }));
+                  setFilters(prev => ({ 
+                    ...prev, 
+                    kecamatan: value,
+                    desa: null // Reset desa when kecamatan changes
+                  }));
+                }}
+                onDesaChange={(value) => {
+                  console.log('BusinessList - Desa changed to:', value);
+                  setFilters(prev => ({ ...prev, desa: value }));
                 }}
               />
               </div>
@@ -960,6 +905,7 @@ const BusinessList = () => {
                     customPeriodEnd: undefined,
                     kabupaten: null,
                     kecamatan: null,
+                    desa: null,
                     confidenceThreshold: 60,
                     radius: 5000, 
                     center_lat: -8.6500, 

@@ -19,11 +19,13 @@ class CategoryMappingSeeder extends Seeder
                 'keywords_id' => [
                     'warung kopi', 'kedai kopi', 'coffee roastery', 'kopi susu',
                     'kopi tubruk', 'kopi hitam', 'espresso', 'latte', 'cappuccino',
-                    'coffee shop', 'coffee house', 'roastery', 'kopi lokal'
+                    'coffee shop', 'coffee house', 'roastery', 'kopi lokal',
+                    'barista', 'brew', 'coffee corner', 'coffee stand'
                 ],
                 'keywords_en' => [
                     'coffee shop', 'café', 'espresso bar', 'coffee house',
-                    'coffee roastery', 'coffee bar', 'coffee corner', 'coffee stand'
+                    'coffee roastery', 'coffee bar', 'coffee corner', 'coffee stand',
+                    'barista', 'brew', 'coffee roaster', 'coffee bean'
                 ],
                 'text_search_queries' => [
                     'cafe in {area}',
@@ -80,12 +82,14 @@ class CategoryMappingSeeder extends Seeder
                 'keywords_id' => [
                     'villa', 'penginapan', 'homestay', 'guesthouse',
                     'villa pribadi', 'villa mewah', 'villa resort',
-                    'private villa', 'luxury villa', 'beach villa'
+                    'private villa', 'luxury villa', 'beach villa',
+                    'private pool', 'vacation rental', 'holiday home'
                 ],
                 'keywords_en' => [
                     'villa', 'private villa', 'luxury villa', 'beach villa',
                     'mountain villa', 'villa resort', 'villa rental',
-                    'holiday villa', 'vacation villa'
+                    'holiday villa', 'vacation villa', 'private pool',
+                    'vacation rental', 'holiday home', 'rental villa'
                 ],
                 'text_search_queries' => [
                     'villa in {area}',
@@ -101,12 +105,14 @@ class CategoryMappingSeeder extends Seeder
                 'keywords_id' => [
                     'hotel', 'resort', 'penginapan', 'akomodasi',
                     'hotel bintang', 'boutique hotel', 'budget hotel',
-                    'hotel mewah', 'resort hotel', 'hotel internasional'
+                    'hotel mewah', 'resort hotel', 'hotel internasional',
+                    'inn', 'hostel', 'motel', 'penginapan mewah'
                 ],
                 'keywords_en' => [
                     'hotel', 'resort', 'accommodation', 'boutique hotel',
                     'luxury hotel', 'budget hotel', 'business hotel',
-                    'resort hotel', 'hotel chain'
+                    'resort hotel', 'hotel chain', 'inn', 'hostel',
+                    'motel', 'luxury accommodation'
                 ],
                 'text_search_queries' => [
                     'hotel in {area}',

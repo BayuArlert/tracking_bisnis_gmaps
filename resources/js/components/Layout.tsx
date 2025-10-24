@@ -13,25 +13,18 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     const { user, isLoading } = useContext(AuthContext);
 
     useEffect(() => {
-        console.log('Layout useEffect - isLoading:', isLoading, 'user:', user);
-        
         // Only redirect if we're not loading AND we have no user
         // This prevents redirect during initialization
         if (!isLoading && !user) {
-            console.log('Layout: No user after loading, redirecting to login in 1000ms');
             const timer = setTimeout(() => {
-                console.log('Layout: Executing redirect to login');
                 router.visit('/login');
             }, 1000);
             return () => clearTimeout(timer);
         }
     }, [user, isLoading]);
 
-    console.log('Layout render - isLoading:', isLoading, 'user:', user);
-
     // Show loading while checking authentication
     if (isLoading) {
-        console.log('Layout: Showing loading screen');
         return (
             <div className="min-h-screen bg-gray-50 flex items-center justify-center">
                 <div className="text-center">
@@ -44,11 +37,8 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
     // If no user after loading, don't render anything (will redirect)
     if (!user) {
-        console.log('Layout: No user, returning null (will redirect)');
         return null;
     }
-
-    console.log('Layout: Rendering main content');
 
     return (
         <ErrorBoundary>

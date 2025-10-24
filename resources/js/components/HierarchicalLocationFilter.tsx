@@ -28,25 +28,36 @@ interface Kecamatan {
   center_lng: number;
 }
 
+interface Desa {
+  name: string;
+  count: number;
+}
+
 interface Props {
   kabupaten?: string;
   kecamatan?: string;
+  desa?: string;
   onKabupatenChange: (kabupaten: string | null) => void;
   onKecamatanChange: (kecamatan: string | null) => void;
+  onDesaChange: (desa: string | null) => void;
   className?: string;
 }
 
 const HierarchicalLocationFilter: React.FC<Props> = ({
   kabupaten,
   kecamatan,
+  desa,
   onKabupatenChange,
   onKecamatanChange,
+  onDesaChange,
   className = "",
 }) => {
   const [kabupatenList, setKabupatenList] = useState<Kabupaten[]>([]);
   const [kecamatanList, setKecamatanList] = useState<Kecamatan[]>([]);
+  const [desaList, setDesaList] = useState<Desa[]>([]);
   const [loadingKabupaten, setLoadingKabupaten] = useState(false);
   const [loadingKecamatan, setLoadingKecamatan] = useState(false);
+  const [loadingDesa, setLoadingDesa] = useState(false);
 
   // Fetch kabupaten list on mount
   useEffect(() => {
@@ -59,9 +70,21 @@ const HierarchicalLocationFilter: React.FC<Props> = ({
       fetchKecamatan(kabupaten);
     } else {
       setKecamatanList([]);
+      setDesaList([]);
       onKecamatanChange(null);
+      onDesaChange(null);
     }
   }, [kabupaten]);
+
+  // Fetch desa when kecamatan changes
+  useEffect(() => {
+    if (kabupaten && kecamatan) {
+      fetchDesa(kabupaten, kecamatan);
+    } else {
+      setDesaList([]);
+      onDesaChange(null);
+    }
+  }, [kecamatan]);
 
   const fetchKabupaten = async () => {
     setLoadingKabupaten(true);
@@ -93,31 +116,60 @@ const HierarchicalLocationFilter: React.FC<Props> = ({
     }
   };
 
+  const fetchDesa = async (kabupatenName: string, kecamatanName: string) => {
+    setLoadingDesa(true);
+    try {
+      const response = await axios.get(
+        `${API}/regions/desa/${encodeURIComponent(kabupatenName)}/${encodeURIComponent(kecamatanName)}`
+      );
+      if (response.data.success) {
+        setDesaList(response.data.data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch desa:", error);
+    } finally {
+      setLoadingDesa(false);
+    }
+  };
+
   const handleKabupatenChange = (value: string) => {
     console.log('Kabupaten changed to:', value);
     if (value === "all") {
       onKabupatenChange(null);
       onKecamatanChange(null);
+      onDesaChange(null);
     } else {
       onKabupatenChange(value);
       onKecamatanChange(null); // Reset kecamatan when kabupaten changes
+      onDesaChange(null); // Reset desa when kabupaten changes
     }
   };
 
   const handleKecamatanChange = (value: string) => {
     if (value === "all") {
       onKecamatanChange(null);
+      onDesaChange(null);
     } else {
       onKecamatanChange(value);
+      onDesaChange(null); // Reset desa when kecamatan changes
+    }
+  };
+
+  const handleDesaChange = (value: string) => {
+    if (value === "all") {
+      onDesaChange(null);
+    } else {
+      onDesaChange(value);
     }
   };
 
   const handleClear = () => {
     onKabupatenChange(null);
     onKecamatanChange(null);
+    onDesaChange(null);
   };
 
-  const hasSelection = kabupaten || kecamatan;
+  const hasSelection = kabupaten || kecamatan || desa;
 
   return (
     <div className={`space-y-3 ${className}`}>
@@ -191,6 +243,40 @@ const HierarchicalLocationFilter: React.FC<Props> = ({
           </div>
         )}
 
+        {/* Desa Dropdown - only show if kecamatan is selected */}
+        {kecamatan && (
+          <div className="flex-1 min-w-0">
+            <label className="block text-sm font-medium mb-1.5 text-gray-700">
+              Desa/Kelurahan
+            </label>
+            <Select
+              value={desa || "all"}
+              onValueChange={handleDesaChange}
+              disabled={loadingDesa || desaList.length === 0}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue
+                  placeholder={
+                    loadingDesa
+                      ? "Loading..."
+                      : desaList.length === 0
+                      ? "Tidak ada desa"
+                      : "Semua Desa"
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent className="max-h-[300px] overflow-y-auto">
+                <SelectItem value="all">Semua Desa</SelectItem>
+                {desaList.map((d) => (
+                  <SelectItem key={d.name} value={d.name}>
+                    {d.name} ({d.count})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
         {/* Clear Button */}
         {hasSelection && (
           <div className="flex items-end">
@@ -219,6 +305,11 @@ const HierarchicalLocationFilter: React.FC<Props> = ({
           {kecamatan && (
             <span className="inline-flex items-center px-2 py-1 bg-green-100 text-green-800 rounded-md">
               Kecamatan: {kecamatan}
+            </span>
+          )}
+          {desa && (
+            <span className="inline-flex items-center px-2 py-1 bg-purple-100 text-purple-800 rounded-md">
+              Desa: {desa}
             </span>
           )}
         </div>

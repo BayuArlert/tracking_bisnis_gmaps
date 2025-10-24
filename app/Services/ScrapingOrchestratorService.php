@@ -6,6 +6,7 @@ use App\Models\Business;
 use App\Models\ScrapeSession;
 use App\Models\BaliRegion;
 use App\Models\CategoryMapping;
+use App\Services\CategoryValidationService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -15,14 +16,17 @@ class ScrapingOrchestratorService
 {
     private GooglePlacesService $googlePlacesService;
     private NewBusinessDetectionService $detectionService;
+    private CategoryValidationService $categoryValidation;
     private ScrapeSession $currentSession;
 
     public function __construct(
         GooglePlacesService $googlePlacesService,
-        NewBusinessDetectionService $detectionService
+        NewBusinessDetectionService $detectionService,
+        CategoryValidationService $categoryValidation
     ) {
         $this->googlePlacesService = $googlePlacesService;
         $this->detectionService = $detectionService;
+        $this->categoryValidation = $categoryValidation;
     }
 
     /**
@@ -98,7 +102,7 @@ class ScrapingOrchestratorService
         }
 
         $this->currentSession = ScrapeSession::create([
-            'session_type' => 'new_business_only',
+            'session_type' => 'initial',
             'target_area' => $regionName,
             'target_categories' => $categories,
             'started_at' => now(),
@@ -187,70 +191,77 @@ class ScrapingOrchestratorService
         set_time_limit(1800); // 30 minutes
         
         $categories = empty($categories) ? $this->getAllCategories() : $categories;
-        $allPlaces = [];
+        $candidates = [];
         $apiCallsCount = 0;
         $estimatedCost = 0;
         $startTime = time();
 
-        Log::info("Starting OPTIMIZED NEW BUSINESS ONLY scraping v2.0", [
+        Log::info("Starting scraping", [
             'region' => $region->name,
             'categories' => $categories,
-            'confidence_threshold' => $confidenceThreshold,
-            'optimization_features' => [
-                'pagination', 'caching', 'batch_operations', 'geolocation_validation',
-                'smart_pre_filtering', 'advanced_confidence_scoring', 'review_freshness'
-            ]
+            'confidence_threshold' => $confidenceThreshold
         ]);
 
-        // OPTIMIZATION 1: Batch load existing place IDs ONCE (not in loop!)
-        $existingPlaceIds = Business::where('area', 'LIKE', "%{$region->name}%")
-            ->pluck('place_id')
-            ->toArray();
+        // OPTIMIZATION 1: Batch load existing place IDs ONCE with caching
+        $existingPlaceIds = Cache::remember('existing_place_ids', 300, function() {
+            return Business::whereNotNull('place_id')
+                ->pluck('place_id')
+                ->toArray();
+        });
         
-        Log::info("Pre-loaded existing businesses", [
-            'count' => count($existingPlaceIds)
-        ]);
+        // OPTIMIZATION 2: Get adaptive review threshold for this area
+        $reviewThreshold = $this->getReviewThresholdForArea($region->name);
 
-        // Step 1: Text Search with PAGINATION for complete coverage
+        // Step 1: Text Search with 1-2 optimized queries per category
         foreach ($categories as $category) {
             $categoryMapping = CategoryMapping::where('brief_category', $category)->first();
-            if (!$categoryMapping) continue;
 
-            $newBusinessQueries = $this->getNewBusinessQueries($category, $region->name);
+            if (!$categoryMapping) {
+                Log::warning("Category mapping not found for: {$category}");
+                continue;
+            }
             
-            foreach ($newBusinessQueries as $query) {
+            $queries = $this->getOptimizedQueries($category, $region->name);
+            
+            foreach ($queries as $query) {
                 try {
-                    // OPTIMIZATION 2: Check cache first (1 hour TTL)
                     $cacheKey = 'text_search:' . md5($query . $region->id);
                     
                     $result = Cache::remember($cacheKey, 3600, function() use ($query, $categoryMapping, &$apiCallsCount, &$estimatedCost) {
-                        // Use PAGINATION to get all 60 results (not just 20)
                         $paginatedResult = $this->googlePlacesService->textSearchWithPagination($query, [
                         'type' => $categoryMapping->google_types[0] ?? null,
                             'language' => 'id'
                         ]);
                         
-                        // Count API calls (1 initial + pages fetched - 1)
-                        $pagesCount = $paginatedResult['pages_fetched'] ?? 1;
+                        // Track actual pagination calls
+                        $pagesCount = $paginatedResult['actual_api_calls'] ?? $paginatedResult['pages_fetched'] ?? 1;
                         $apiCallsCount += $pagesCount;
-                        $estimatedCost += $pagesCount * 0.032;
+                        $estimatedCost += ($pagesCount * 0.032);
                         
                         return $paginatedResult;
                     });
                     
-                    if (isset($result['results'])) {
+                    if (isset($result['results']) && is_array($result['results'])) {
                         foreach ($result['results'] as $place) {
-                            // OPTIMIZATION 3: Smart pre-filtering with geolocation & batch checks
-                            if ($this->isNewBusiness($place, $category, $existingPlaceIds, $region)) {
-                                $allPlaces[$place['place_id']] = [
+                            // PRE-FILTERING: Cek apakah likely new business DAN matches category
+                            if ($this->isLikelyNewBusiness($place, $existingPlaceIds, $region, $reviewThreshold) &&
+                                $this->matchesCategoryBasic($place, $category, $categoryMapping)) {
+                                $candidates[$place['place_id']] = [
                                     'place' => $place,
                                     'category' => $category
                                 ];
+                            } else if (!$this->matchesCategoryBasic($place, $category, $categoryMapping)) {
+                                // Log rejection untuk debugging
+                                Log::debug("Pre-filter rejected (category mismatch)", [
+                                    'name' => $place['name'] ?? 'Unknown',
+                                    'requested_category' => $category,
+                                    'reason' => 'basic_category_check_failed'
+                                ]);
                             }
                         }
                     }
                     
-                    usleep(150000); // 0.15 second (optimized from 0.2)
+                    usleep(150000); // Rate limiting
                     
                 } catch (\Exception $e) {
                     Log::warning("Text search failed for query: {$query} - " . $e->getMessage());
@@ -258,71 +269,362 @@ class ScrapingOrchestratorService
             }
         }
 
-        Log::info("Text search with pagination completed", [
+        Log::info("Text search completed", [
             'region' => $region->name,
-            'potential_new_businesses' => count($allPlaces),
-            'api_calls_used' => $apiCallsCount
+            'candidates_found' => count($candidates),
+            'api_calls_used' => $apiCallsCount,
+            'estimated_cost' => '$' . number_format($estimatedCost, 2)
         ]);
 
-        // OPTIMIZATION 4: Batch check database again before fetching details
-        $placeIdsToFetch = array_keys($allPlaces);
-        $recentlyAddedPlaceIds = Business::whereIn('place_id', $placeIdsToFetch)
-            ->pluck('place_id')
-            ->toArray();
-        
-        $placeIdsToFetch = array_diff($placeIdsToFetch, $recentlyAddedPlaceIds);
-        
-        Log::info("After deduplication", [
-            'places_to_fetch_details' => count($placeIdsToFetch),
-            'already_exists' => count($recentlyAddedPlaceIds)
-        ]);
+        // Step 2: Confirm with Place Details and Review Date Analysis
+        $this->confirmAndSaveNewBusinesses($candidates, $confidenceThreshold, $apiCallsCount, $estimatedCost);
+    }
 
-        // OPTIMIZATION 5: Fetch details with BASIC FIELDS ONLY (cheaper!)
-        $basicFields = $this->googlePlacesService->getBasicFieldsForNewBusinessDetection();
+    /**
+     * Pre-filter businesses by review count (OPTIMIZATION: No Place Details needed!)
+     */
+    private function isLikelyNewBusiness(array $place, array $existingPlaceIds, BaliRegion $region, int $reviewThreshold): bool
+    {
+        $placeId = $place['place_id'] ?? '';
         
-        $placeDetails = [];
-        $chunks = array_chunk($placeIdsToFetch, 10);
+        // 1. Skip existing businesses
+        if (in_array($placeId, $existingPlaceIds)) {
+            return false;
+        }
         
-        foreach ($chunks as $chunkIndex => $chunk) {
-            foreach ($chunk as $placeId) {
-                try {
-                    $details = $this->googlePlacesService->placeDetails($placeId, $basicFields);
-                    
-                    $apiCallsCount++;
-                    $estimatedCost += 0.017; // Basic tier pricing
-                    
-                    if (isset($details['result'])) {
-                        $placeDetails[$placeId] = $details['result'];
-                    }
-                    
-                    usleep(100000); // 0.1 second
-                
-            } catch (\Exception $e) {
-                    Log::warning("Failed to fetch details for {$placeId}: " . $e->getMessage());
+        // 2. Skip closed businesses
+        $businessStatus = $place['business_status'] ?? '';
+        if (in_array($businessStatus, ['CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY'])) {
+            return false;
+        }
+        
+        // 3. PRIMARY FILTER: Review count (available in Text Search response!)
+        $reviewCount = $place['user_ratings_total'] ?? 0;
+        $name = strtolower($place['name'] ?? '');
+        
+        // Low review count: definitely check
+        if ($reviewCount < $reviewThreshold) {
+            return true; // Likely new!
+        }
+        
+        // 4. SELECTIVE VIRAL DETECTION (v4.1)
+        // Medium review count (16-100): check ONLY if has keyword indicators
+        if ($reviewCount >= $reviewThreshold && $reviewCount <= 100) {
+            
+            // Universal keywords (Indo + Eng)
+            $newKeywords = [
+                'new', 'baru', 'terbaru',
+                'grand opening', 'soft opening',
+                'recently opened', 'baru dibuka', 'baru buka',
+                'coming soon', 'segera dibuka',
+                'opening soon', 'dibuka baru-baru ini',
+                '2024', '2025' // Year indicators
+            ];
+            
+            foreach ($newKeywords as $keyword) {
+                if (strpos($name, $keyword) !== false) {
+                    Log::info("✨ Selective viral candidate (keyword match)", [
+                        'place_id' => $placeId,
+                        'name' => $place['name'],
+                        'review_count' => $reviewCount,
+                        'keyword' => $keyword,
+                        'region' => $region->name
+                    ]);
+                    return true; // Has signal - worth checking!
                 }
             }
             
-            if ($chunkIndex < count($chunks) - 1) {
-                usleep(200000); // 0.2 second between chunks
+            // No keywords found - skip to save cost
+            Log::debug("Skipping medium review count (no keyword signal)", [
+                'review_count' => $reviewCount,
+                'name' => $place['name']
+            ]);
+            return false; // Save $0.017
+        }
+        
+        // 5. HIGH review count (101+): Only if very strong keyword signal
+        if ($reviewCount > 100) {
+            $strongKeywords = ['new', 'baru', 'grand opening', '2025'];
+            foreach ($strongKeywords as $keyword) {
+                if (strpos($name, $keyword) !== false) {
+                    Log::info("High review count with strong keyword", [
+                        'name' => $place['name'],
+                        'review_count' => $reviewCount,
+                        'keyword' => $keyword
+                    ]);
+                    return true;
+                }
+            }
+            return false; // Likely established
+        }
+        
+        // 6. Geolocation validation
+        if (isset($place['geometry']['location'])) {
+            $placeLat = $place['geometry']['location']['lat'];
+            $placeLng = $place['geometry']['location']['lng'];
+            
+            $distance = $this->calculateDistance(
+                (float) $region->center_lat,
+                (float) $region->center_lng,
+                (float) $placeLat,
+                (float) $placeLng
+            );
+            
+            if ($distance > $region->search_radius + 2000) {
+                return false; // Too far
             }
         }
+        
+        return false;
+    }
 
-        // Step 3: Process with ADVANCED confidence scoring & review freshness
-        $businessesFound = 0;
+    /**
+     * Detect review spike pattern (viral new business indicator)
+     * 
+     * Universal patterns work for all regions
+     */
+    private function hasReviewSpike(array $reviews, int $totalReviews): array
+    {
+        if (empty($reviews) || count($reviews) < 5) {
+            return ['has_spike' => false, 'reason' => 'insufficient_reviews'];
+        }
+        
+        // Sort reviews by time (oldest first)
+        usort($reviews, fn($a, $b) => $a['time'] - $b['time']);
+        
+        $oldestReview = $reviews[0]['time'];
+        $daysSinceFirst = (time() - $oldestReview) / 86400;
+        
+        // Pattern 1: Viral new business (30+ reviews in < 90 days)
+        if ($totalReviews >= 30 && $daysSinceFirst < 90) {
+            return [
+                'has_spike' => true,
+                'pattern' => 'viral_new',
+                'reviews_per_day' => round($totalReviews / $daysSinceFirst, 2),
+                'days_since_first' => round($daysSinceFirst),
+                'reason' => sprintf("30+ reviews dalam %.0f hari", $daysSinceFirst)
+            ];
+        }
+        
+        // Pattern 2: Popular new business (50+ reviews in < 180 days)
+        if ($totalReviews >= 50 && $daysSinceFirst < 180) {
+            return [
+                'has_spike' => true,
+                'pattern' => 'popular_new',
+                'reviews_per_day' => round($totalReviews / $daysSinceFirst, 2),
+                'days_since_first' => round($daysSinceFirst),
+                'reason' => sprintf("50+ reviews dalam %.0f hari", $daysSinceFirst)
+            ];
+        }
+        
+        // Pattern 3: Steady high growth (>1 review/day, < 180 days)
+        if ($daysSinceFirst > 0 && $daysSinceFirst < 180) {
+            $reviewsPerDay = $totalReviews / $daysSinceFirst;
+            if ($reviewsPerDay >= 1) {
+                return [
+                    'has_spike' => true,
+                    'pattern' => 'steady_growth',
+                    'reviews_per_day' => round($reviewsPerDay, 2),
+                    'days_since_first' => round($daysSinceFirst),
+                    'reason' => sprintf("Growth rate %.1f reviews/day", $reviewsPerDay)
+                ];
+            }
+        }
+        
+        return ['has_spike' => false, 'reason' => 'no_spike_detected'];
+    }
+
+    /**
+     * Get adaptive review threshold based on area characteristics
+     */
+    private function getReviewThresholdForArea(string $regionName): int
+    {
+        $regionName = strtolower($regionName);
+        
+        // Tourist/popular areas: stricter threshold
+        if (strpos($regionName, 'badung') !== false || 
+            strpos($regionName, 'denpasar') !== false ||
+            strpos($regionName, 'gianyar') !== false) {
+            return 15; // Businesses get reviews faster here
+        }
+        
+        // Medium areas
+        if (strpos($regionName, 'tabanan') !== false ||
+            strpos($regionName, 'buleleng') !== false ||
+            strpos($regionName, 'klungkung') !== false) {
+            return 12;
+        }
+        
+        // Remote/small areas: more lenient
+        // (Jembrana, Karangasem, Bangli)
+        return 20; // Businesses get reviews slower here
+    }
+
+    /**
+     * Get area type for logging
+     */
+    private function getAreaType(string $regionName): string
+    {
+        $regionName = strtolower($regionName);
+        
+        if (strpos($regionName, 'badung') !== false || 
+            strpos($regionName, 'denpasar') !== false ||
+            strpos($regionName, 'gianyar') !== false) {
+            return 'tourist/popular';
+        }
+        
+        if (strpos($regionName, 'tabanan') !== false ||
+            strpos($regionName, 'buleleng') !== false ||
+            strpos($regionName, 'klungkung') !== false) {
+            return 'medium';
+        }
+        
+        return 'remote/small';
+    }
+
+    /**
+     * Get optimized queries (1-2 per category)
+     */
+    private function getOptimizedQueries(string $category, string $regionName): array
+    {
+        // OPTIMIZED: Only 1-2 most effective queries
+        return [
+            "{$category} {$regionName}",              // General query (most effective)
+            "new {$category} {$regionName}",          // Specific for new businesses
+        ];
+    }
+
+    /**
+     * Confirm candidates with Place Details and save new businesses
+     */
+    private function confirmAndSaveNewBusinesses(array $candidates, int $confidenceThreshold, int &$apiCallsCount, float &$estimatedCost): void
+    {
+        $businessesProcessed = 0;
         $businessesNew = 0;
-        $businessesUpdated = 0;
         $businessesRejected = 0;
-        $businessesToSave = [];
-
-        foreach ($placeDetails as $placeId => $details) {
+        
+        Log::info("Starting Place Details confirmation", [
+            'candidates' => count($candidates)
+        ]);
+        
+        foreach ($candidates as $placeId => $data) {
+            $place = $data['place'];
+            $category = $data['category'];
+            
+            // Get Place Details with minimal fields
+            $details = $this->googlePlacesService->placeDetails($placeId, $this->getMinimalFields());
+            
             if (!$details) continue;
+            
+            $apiCallsCount++;
+            $estimatedCost += 0.017;
+
+            // ========== POST-FILTERING: VALIDASI KATEGORI (UNIVERSAL) ==========
+            $detailsResult = $details['result'] ?? $details;
+
+            if (!$this->categoryValidation->validateBusinessCategory(
+                $place, 
+                $detailsResult, 
+                $category,
+                CategoryMapping::where('brief_category', $category)->first()
+            )) {
+                $businessesRejected++;
+                Log::info("Rejected: Category validation failed", [
+                    'name' => $detailsResult['name'] ?? 'Unknown',
+                    'place_id' => $placeId,
+                    'requested_category' => $category,
+                    'google_types' => $detailsResult['types'] ?? [],
+                    'reason' => 'strict_category_validation_failed'
+                ]);
+                continue; // Skip bisnis ini
+            }
+            // ===================================================================
 
             try {
-                // OPTIMIZATION 6: Advanced confidence scoring with NewBusinessDetectionService
                 $business = Business::firstOrNew(['place_id' => $placeId]);
                 $reviews = $details['reviews'] ?? [];
                 $photos = $details['photos'] ?? [];
                 
+                // CRITICAL: Review date analysis (final confirmation)
+                if (!empty($reviews)) {
+                    $oldestReview = min(array_column($reviews, 'time'));
+                    $monthsOld = (time() - $oldestReview) / (30 * 24 * 3600);
+                    
+                    // === NEW: SPIKE DETECTION (v4.1) ===
+                    $totalReviews = $details['result']['user_ratings_total'] ?? 0;
+                    $spikeAnalysis = $this->hasReviewSpike($reviews, $totalReviews);
+                    
+                    if ($spikeAnalysis['has_spike']) {
+                        // Viral business detected!
+                        Log::info("🔥 VIRAL BUSINESS DETECTED", [
+                            'place_id' => $placeId,
+                            'name' => $details['result']['name'] ?? 'Unknown',
+                            'pattern' => $spikeAnalysis['pattern'],
+                            'reviews_per_day' => $spikeAnalysis['reviews_per_day'],
+                            'days_since_first' => $spikeAnalysis['days_since_first'],
+                            'reason' => $spikeAnalysis['reason']
+                        ]);
+                        
+                        // PASS: Spike detected, proceed (even if > 6 months)
+                        // Spike indicates legitimate viral/new business
+                    } else {
+                        // No spike: apply standard 6-month rule
+                        if ($monthsOld > 6) {
+                        $businessesRejected++;
+                            Log::info("Skipping: Too old (no spike detected)", [
+                                'place_id' => $placeId,
+                                'name' => $details['result']['name'] ?? 'Unknown',
+                                'months_old' => round($monthsOld, 1)
+                        ]);
+                        continue;
+                    }
+                }
+                
+                    // === NEW: PHOTO TIMESTAMP VALIDATION (v4.1) ===
+                    $photos = $details['result']['photos'] ?? [];
+                    
+                    if (!empty($photos)) {
+                        // Extract photo timestamps (if available)
+                        $photoTimestamps = array_filter(array_map(function($photo) {
+                            return $photo['time'] ?? null;
+                        }, $photos));
+                        
+                        if (!empty($photoTimestamps)) {
+                            $oldestPhoto = min($photoTimestamps);
+                            $photoMonthsOld = (time() - $oldestPhoto) / (30 * 24 * 3600);
+                            
+                            // Cross-validation: photo age vs review age
+                            // If photos are OLD (>12 months) but reviews are NEW (<6 months) = suspicious
+                            if ($photoMonthsOld > 12 && $monthsOld < 6) {
+                                Log::warning("⚠️ Photo-review age mismatch", [
+                                    'place_id' => $placeId,
+                                    'name' => $details['result']['name'] ?? 'Unknown',
+                                    'photo_age_months' => round($photoMonthsOld, 1),
+                                    'review_age_months' => round($monthsOld, 1),
+                                    'assessment' => 'Likely old business with recent review surge'
+                                ]);
+                                
+                                // Skip UNLESS has spike (spike = legitimate viral event)
+                                if (!$spikeAnalysis['has_spike']) {
+                                    $businessesRejected++;
+                                    Log::info("Skipping: Photo-review mismatch without spike", [
+                                        'place_id' => $placeId
+                                    ]);
+                                    continue; // False positive - skip
+                                } else {
+                                    Log::info("✅ Keeping: Has spike despite mismatch", [
+                                        'place_id' => $placeId,
+                                        'spike_pattern' => $spikeAnalysis['pattern'],
+                                        'note' => 'Viral old business - still valuable'
+                                    ]);
+                                    // Keep it - viral old business still valuable data
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Calculate full confidence score
                 $fullAnalysis = $this->detectionService->calculateNewBusinessScore(
                     $business,
                     $details,
@@ -333,105 +635,341 @@ class ScrapingOrchestratorService
                 $advancedConfidence = $fullAnalysis['score'];
                 $confidenceLevel = $fullAnalysis['confidence'];
                 
-                // OPTIMIZATION 7: Review freshness validation
-                $newestReviewDate = $fullAnalysis['metadata_analysis']['newest_review_date'] ?? null;
-                $hasRecentActivity = $fullAnalysis['metadata_analysis']['has_recent_activity'] ?? false;
-                
-                // Reject if no recent activity (last review > 6 months)
-                if ($newestReviewDate && !$hasRecentActivity) {
-                    $monthsSinceLastReview = floor((time() - strtotime($newestReviewDate)) / (30 * 24 * 3600));
-                    if ($monthsSinceLastReview > 6) {
-                        $businessesRejected++;
-                        Log::debug("Rejected: old reviews only", [
-                            'place' => $details['name'] ?? 'Unknown',
-                            'last_review' => $newestReviewDate,
-                            'months_ago' => $monthsSinceLastReview
-                        ]);
-                        continue;
-                    }
-                }
-                
-                // Multi-level confidence filtering
-                $shouldProcess = false;
-                $reason = '';
-                
-                if ($confidenceLevel === 'high' && $advancedConfidence >= $confidenceThreshold) {
-                    $shouldProcess = true;
-                    $reason = 'high_confidence';
-                } elseif ($advancedConfidence >= ($confidenceThreshold + 15)) {
-                    $shouldProcess = true;
-                    $reason = 'high_score';
-                }
-                
-                if ($shouldProcess) {
-                    $result = $this->processNewBusinessData($details, $allPlaces[$placeId]['place'] ?? []);
+                // Apply confidence threshold
+                if ($advancedConfidence >= $confidenceThreshold) {
+                    $this->processBusinessData($details['result'] ?? $details, $place, $business, $category);
+                    $businessesNew++;
                     
-                    if ($result['is_new']) {
-                        $businessesNew++;
-                    } elseif ($result['is_updated']) {
-                        $businessesUpdated++;
-                    }
-                    
-                    $businessesFound++;
-                    
-                    Log::info("New business processed", [
-                        'place_id' => $placeId,
+                    Log::info("New business confirmed", [
                         'name' => $details['name'] ?? 'Unknown',
                         'confidence' => $advancedConfidence,
-                        'confidence_level' => $confidenceLevel,
-                        'reason' => $reason,
-                        'is_new' => $result['is_new'],
-                        'business_age_estimate' => $fullAnalysis['business_age_estimate']
+                        'review_count' => $details['user_ratings_total'] ?? 0,
+                        'months_old' => isset($monthsOld) ? round($monthsOld, 1) : 'N/A'
                     ]);
                 } else {
                     $businessesRejected++;
-                    
-                    Log::debug("Rejected: low confidence", [
-                        'place_id' => $placeId,
+                    Log::debug("Rejected: Low confidence", [
                         'name' => $details['name'] ?? 'Unknown',
                         'confidence' => $advancedConfidence,
-                        'confidence_level' => $confidenceLevel,
                         'threshold' => $confidenceThreshold
                     ]);
                 }
                 
+                $businessesProcessed++;
+                
             } catch (\Exception $e) {
-                Log::warning("Failed to process new business {$placeId}: " . $e->getMessage());
+                Log::error("Error processing business: " . $e->getMessage());
             }
         }
 
-        // Update session statistics with metadata
+        // Update session stats
         $this->currentSession->update([
+            'businesses_found' => $businessesProcessed,
+            'businesses_new' => $businessesNew,
             'api_calls_count' => $apiCallsCount,
             'estimated_cost' => $estimatedCost,
-            'businesses_found' => $businessesFound,
-            'businesses_new' => $businessesNew,
-            'businesses_updated' => $businessesUpdated,
-            'metadata' => [
-                'businesses_rejected' => $businessesRejected,
-                'total_candidates' => count($allPlaces),
-                'details_fetched' => count($placeDetails),
-                'optimization_version' => '2.0',
-                'features_used' => [
-                    'pagination',
-                    'caching',
-                    'batch_operations',
-                    'geolocation_validation',
-                    'smart_pre_filtering',
-                    'advanced_confidence_scoring',
-                    'review_freshness_validation'
-                ]
-            ]
         ]);
         
-        Log::info("Optimized scraping completed", [
-            'found' => $businessesFound,
+        Log::info("Scraping completed", [
+            'processed' => $businessesProcessed,
             'new' => $businessesNew,
             'rejected' => $businessesRejected,
-            'api_calls' => $apiCallsCount,
-            'cost' => '$' . number_format($estimatedCost, 2),
-            'time_elapsed' => (time() - $startTime) . 's'
+            'success_rate' => $businessesProcessed > 0 ? round(($businessesNew / $businessesProcessed) * 100, 1) . '%' : '0%',
+            'api_calls_total' => $apiCallsCount,
+            'cost_total' => '$' . number_format($estimatedCost, 2)
         ]);
+
+        // ========== COMPREHENSIVE LOGGING: CATEGORY FILTERING SUMMARY ==========
+        Log::info("Category filtering summary", [
+            'requested_categories' => $this->currentSession->target_categories,
+            'total_candidates' => count($candidates),
+            'passed_pre_filter' => $businessesProcessed + $businessesRejected,
+            'passed_post_filter' => $businessesNew,
+            'rejected_count' => $businessesRejected,
+            'rejection_rate' => $businessesProcessed > 0 ? round(($businessesRejected / $businessesProcessed) * 100, 1) . '%' : '0%',
+            'category_accuracy' => $businessesProcessed > 0 ? round(($businessesNew / $businessesProcessed) * 100, 1) . '%' : '0%'
+        ]);
+        // =====================================================================
+    }
+
+    /**
+     * Get minimal fields for cost efficiency
+     */
+    private function getMinimalFields(): array
+    {
+        return [
+            'place_id',
+            'name',
+            'formatted_address',
+            'geometry',
+            'reviews',
+            'photos',
+            'user_ratings_total',
+            'rating',
+            'business_status',
+            'types'
+        ];
+    }
+
+    /**
+     * Perform Nearby Search (Primary Strategy)
+     */
+    private function performNearbySearch(
+        BaliRegion $region, 
+        CategoryMapping $categoryMapping, 
+        array $existingPlaceIds,
+        int &$apiCallsCount,
+        float &$estimatedCost
+    ): array {
+        $places = [];
+        
+        // Use first Google type for nearby search
+        $googleType = $categoryMapping->google_types[0] ?? null;
+        
+        if (!$googleType) {
+            return $places;
+        }
+        
+        Log::info("Performing Nearby Search", [
+            'region' => $region->name,
+            'type' => $googleType,
+            'radius' => $region->search_radius
+        ]);
+        
+        try {
+            $result = $this->googlePlacesService->nearbySearchWithPagination(
+                (float) $region->center_lat,
+                (float) $region->center_lng,
+                (int) $region->search_radius,
+                ['type' => $googleType]
+            );
+            
+            $apiCallsCount += $result['actual_api_calls'] ?? 1;
+            $estimatedCost += ($result['actual_api_calls'] ?? 1) * 0.032;
+            
+            if (isset($result['results']) && is_array($result['results'])) {
+                foreach ($result['results'] as $place) {
+                    // Pre-filter with business_status
+                    if ($this->isNewBusiness($place, $categoryMapping->brief_category, $existingPlaceIds, $region)) {
+                        $places[$place['place_id']] = [
+                            'place' => $place,
+                            'category' => $categoryMapping->brief_category,
+                            'source' => 'nearby_search'
+                        ];
+                    }
+                }
+            }
+            
+            Log::info("Nearby Search completed", [
+                'region' => $region->name,
+                'type' => $googleType,
+                'results_found' => count($result['results'] ?? []),
+                'candidates_after_prefilter' => count($places)
+            ]);
+                        
+                    } catch (\Exception $e) {
+            Log::warning("Nearby Search failed: " . $e->getMessage());
+        }
+        
+        return $places;
+    }
+
+    /**
+     * Perform Text Search (Fallback Strategy)
+     */
+    private function performTextSearch(
+        BaliRegion $region,
+        string $category,
+        CategoryMapping $categoryMapping,
+        array $existingPlaceIds,
+        int &$apiCallsCount,
+        float &$estimatedCost
+    ): array {
+        $places = [];
+        
+        // REDUCED: Only 2 most effective queries (not 5)
+        $queries = $this->getOptimizedQueries($category, $region->name);
+        
+        foreach ($queries as $query) {
+            try {
+                $cacheKey = 'text_search:' . md5($query . $region->id);
+                
+                $result = Cache::remember($cacheKey, 3600, function() use ($query, $categoryMapping, &$apiCallsCount, &$estimatedCost) {
+                    $paginatedResult = $this->googlePlacesService->textSearchWithPagination($query, [
+                        'type' => $categoryMapping->google_types[0] ?? null,
+                        'language' => 'id'
+                    ]);
+                    
+                    // Track actual pagination calls
+                    $pagesCount = $paginatedResult['actual_api_calls'] ?? $paginatedResult['pages_fetched'] ?? 1;
+                    $apiCallsCount += $pagesCount;
+                    $estimatedCost += ($pagesCount * 0.032);
+                    
+                    return $paginatedResult;
+                });
+                
+                if (isset($result['results']) && is_array($result['results'])) {
+                    foreach ($result['results'] as $place) {
+                        if ($this->isNewBusiness($place, $category, $existingPlaceIds, $region)) {
+                            $places[$place['place_id']] = [
+                                'place' => $place,
+                                'category' => $category,
+                                'source' => 'text_search'
+                            ];
+                        }
+                    }
+                }
+                
+                usleep(150000);
+                        
+                    } catch (\Exception $e) {
+                Log::warning("Text search failed for query: {$query} - " . $e->getMessage());
+            }
+        }
+        
+        return $places;
+    }
+
+    /**
+     * Get optimized queries (reduced from 5 to 2)
+     */
+
+    /**
+     * Process new business candidates with adaptive threshold
+     */
+    private function processNewBusinessCandidates(
+        array $allPlaces,
+        int $baseConfidenceThreshold,
+        int &$apiCallsCount,
+        float &$estimatedCost
+    ): void {
+        $businessesProcessed = 0;
+        $businessesNew = 0;
+        $businessesRejected = 0;
+        
+        foreach ($allPlaces as $placeId => $data) {
+            $place = $data['place'];
+            $category = $data['category'];
+            $source = $data['source'] ?? 'unknown';
+            
+            // Get Place Details
+            $details = $this->googlePlacesService->placeDetails($placeId);
+            
+            if (!$details) continue;
+            
+                    $apiCallsCount++;
+                    $estimatedCost += 0.017;
+
+            try {
+                $business = Business::firstOrNew(['place_id' => $placeId]);
+                $reviews = $details['reviews'] ?? [];
+                $photos = $details['photos'] ?? [];
+                
+                // Calculate confidence with full analysis
+                $fullAnalysis = $this->detectionService->calculateNewBusinessScore(
+                    $business,
+                    $details,
+                    $reviews,
+                    $photos
+                );
+                
+                $advancedConfidence = $fullAnalysis['score'];
+                $confidenceLevel = $fullAnalysis['confidence'];
+                $businessStatus = $details['business_status'] ?? '';
+                
+                // ADAPTIVE: Get threshold for this region
+                $region = BaliRegion::find($place['region_id'] ?? null);
+                $adaptiveThreshold = $this->getAdaptiveConfidenceThreshold($region, $baseConfidenceThreshold);
+                
+                // Multi-level confidence filtering with OPENED_RECENTLY bonus
+                $shouldProcess = false;
+                $reason = '';
+                
+                // PRIORITY 1: business_status = OPENED_RECENTLY (strongest signal)
+                if ($businessStatus === 'OPENED_RECENTLY') {
+                    $shouldProcess = true;
+                    $reason = "business_status=OPENED_RECENTLY (golden signal)";
+                }
+                // PRIORITY 2: High confidence above adaptive threshold
+                elseif ($confidenceLevel === 'high' && $advancedConfidence >= $adaptiveThreshold) {
+                    $shouldProcess = true;
+                    $reason = "high confidence ({$advancedConfidence}% >= {$adaptiveThreshold}%)";
+                }
+                // PRIORITY 3: Medium confidence with lower threshold
+                elseif ($confidenceLevel === 'medium' && $advancedConfidence >= ($adaptiveThreshold - 10)) {
+                    $shouldProcess = true;
+                    $reason = "medium confidence ({$advancedConfidence}% >= " . ($adaptiveThreshold - 10) . "%)";
+                }
+                
+                if ($shouldProcess) {
+                    $this->processBusinessData($details, $place, $business);
+                    $businessesNew++;
+                    
+                    Log::info("New business accepted", [
+                        'name' => $details['name'] ?? 'Unknown',
+                        'confidence' => $advancedConfidence,
+                        'threshold' => $adaptiveThreshold,
+                        'reason' => $reason,
+                        'source' => $source
+                    ]);
+                } else {
+                    $businessesRejected++;
+                    
+                    Log::debug("Business rejected", [
+                        'name' => $details['name'] ?? 'Unknown',
+                        'confidence' => $advancedConfidence,
+                        'threshold' => $adaptiveThreshold,
+                        'confidence_level' => $confidenceLevel
+                    ]);
+                }
+                
+                $businessesProcessed++;
+                    
+                } catch (\Exception $e) {
+                Log::error("Error processing business: " . $e->getMessage());
+            }
+        }
+
+        // Update session stats
+        $this->currentSession->update([
+            'businesses_found' => $businessesProcessed,
+            'businesses_new' => $businessesNew,
+            'api_calls_count' => $apiCallsCount,
+            'estimated_cost' => $estimatedCost,
+        ]);
+        
+        Log::info("Business processing completed", [
+            'processed' => $businessesProcessed,
+            'accepted' => $businessesNew,
+            'rejected' => $businessesRejected,
+            'acceptance_rate' => $businessesProcessed > 0 ? round(($businessesNew / $businessesProcessed) * 100, 1) . '%' : '0%'
+        ]);
+    }
+
+    /**
+     * Get adaptive confidence threshold based on area size
+     */
+    private function getAdaptiveConfidenceThreshold(BaliRegion $region, int $baseThreshold): int
+    {
+        // Adjust threshold based on area characteristics
+        $areaSize = $region->search_radius;
+        $regionName = strtolower($region->name);
+        
+        // Large populated areas: higher threshold (more data available)
+        if (strpos($regionName, 'badung') !== false || 
+            strpos($regionName, 'denpasar') !== false) {
+            return max(65, $baseThreshold);
+        }
+        
+        // Medium areas: moderate threshold
+        if (strpos($regionName, 'gianyar') !== false || 
+            strpos($regionName, 'buleleng') !== false ||
+            strpos($regionName, 'tabanan') !== false) {
+            return max(55, min($baseThreshold, 65));
+        }
+        
+        // Small areas: lower threshold (less data, need to be more lenient)
+        return max(50, min($baseThreshold, 60));
     }
 
     /**
@@ -439,8 +977,8 @@ class ScrapingOrchestratorService
      */
     private function performInitialScraping(BaliRegion $region, array $categories): void
     {
-        // Use the same optimized logic with default threshold of 75
-        $this->performNewBusinessOnlyScraping($region, $categories, 75);
+        // Use the same optimized logic with default threshold of 10 (more inclusive)
+        $this->performNewBusinessOnlyScraping($region, $categories, 10);
     }
 
     /**
@@ -450,327 +988,264 @@ class ScrapingOrchestratorService
     {
         $regions = empty($regions) ? $this->getPriorityRegions() : $regions;
         $categories = empty($categories) ? $this->getAllCategories() : $categories;
-        
-        $apiCallsCount = 0;
-        $estimatedCost = 0;
-        $businessesFound = 0;
-        $businessesNew = 0;
-        $businessesUpdated = 0;
 
-        foreach ($regions as $regionName) {
-            $region = BaliRegion::where('name', $regionName)->where('type', 'kabupaten')->first();
-            if (!$region) continue;
-
-            // Step 1: Text Search for "new" keywords
-            foreach ($categories as $category) {
-                $categoryMapping = CategoryMapping::where('brief_category', $category)->first();
-                if (!$categoryMapping) continue;
-
-                $newQueries = [
-                    "{$category} baru dibuka {$regionName}",
-                    "new {$category} {$regionName}",
-                    "recently opened {$category} {$regionName}",
-                ];
-
-                foreach ($newQueries as $query) {
-                    try {
-                        $result = $this->googlePlacesService->textSearch($query);
-                        $apiCallsCount++;
-                        $estimatedCost += 0.032;
-
-                        if (isset($result['results'])) {
-                            foreach ($result['results'] as $place) {
-                                $details = $this->googlePlacesService->placeDetails($place['place_id']);
-                                $apiCallsCount++;
-                                $estimatedCost += 0.017;
-
-                                $result = $this->processBusinessData($details['result'] ?? [], $place);
-                                
-                                if ($result['is_new']) {
-                                    $businessesNew++;
-                                } elseif ($result['is_updated']) {
-                                    $businessesUpdated++;
-                                }
-                                
-                                $businessesFound++;
-                            }
-                        }
-
-                        usleep(100000); // 0.1 second delay
-                        
-                    } catch (\Exception $e) {
-                        Log::warning("Weekly text search failed for query: {$query} - " . $e->getMessage());
-                    }
-                }
-            }
-
-            // Step 2: Scan hot zones (areas with high growth)
-            $hotZones = $this->getHotZones($region);
+        foreach ($regions as $region) {
+            Log::info("Starting weekly update for region: {$region->name}");
             
-            foreach ($hotZones as $hotZone) {
-                foreach ($categories as $category) {
-                    $categoryMapping = CategoryMapping::where('brief_category', $category)->first();
-                    if (!$categoryMapping) continue;
-
-                    try {
-                        $result = $this->googlePlacesService->nearbySearch(
-                            $hotZone['lat'],
-                            $hotZone['lng'],
-                            $hotZone['radius'],
-                            ['type' => $categoryMapping->google_types[0] ?? null]
-                        );
-                        
-                        $apiCallsCount++;
-                        $estimatedCost += 0.032;
-
-                        if (isset($result['results'])) {
-                            foreach ($result['results'] as $place) {
-                                // Check if this is a new place
-                                $existingBusiness = Business::where('place_id', $place['place_id'])->first();
-                                
-                                if (!$existingBusiness) {
-                                    $details = $this->googlePlacesService->placeDetails($place['place_id']);
-                                    $apiCallsCount++;
-                                    $estimatedCost += 0.017;
-
-                                    $result = $this->processBusinessData($details['result'] ?? [], $place);
-                                    
-                                    if ($result['is_new']) {
-                                        $businessesNew++;
-                                    }
-                                    
-                                    $businessesFound++;
-                                }
-                            }
-                        }
-
-                        usleep(100000); // 0.1 second delay
-                        
-                    } catch (\Exception $e) {
-                        Log::warning("Hot zone search failed: " . $e->getMessage());
-                    }
-                }
-            }
-
-            // Step 3: Update young businesses (age < 6 months, review < 20)
-            $youngBusinesses = Business::where('area', 'LIKE', "%{$regionName}%")
-                ->where('review_count', '<', 20)
-                ->where('first_seen', '>', now()->subMonths(6))
-                ->limit(20) // Limit to avoid too many API calls
-                ->get();
-
-            foreach ($youngBusinesses as $business) {
-                try {
-                    $details = $this->googlePlacesService->placeDetails($business->place_id);
-                    $apiCallsCount++;
-                    $estimatedCost += 0.017;
-
-                    $result = $this->processBusinessData($details['result'] ?? [], [], $business);
-                    
-                    if ($result['is_updated']) {
-                        $businessesUpdated++;
-                    }
-                    
-                    usleep(100000); // 0.1 second delay
-                    
-                } catch (\Exception $e) {
-                    Log::warning("Failed to update young business {$business->place_id}: " . $e->getMessage());
-                }
-            }
+            // Use new business only scraping for weekly updates
+            $this->performNewBusinessOnlyScraping($region, $categories, 60);
         }
-
-        // Update session statistics
-        $this->currentSession->update([
-            'api_calls_count' => $apiCallsCount,
-            'estimated_cost' => $estimatedCost,
-            'businesses_found' => $businessesFound,
-            'businesses_new' => $businessesNew,
-            'businesses_updated' => $businessesUpdated,
-        ]);
     }
 
     /**
      * Process business data and save to database
      */
-    private function processBusinessData(array $details, array $place = [], ?Business $existingBusiness = null): array
+    private function processBusinessData(array $details, array $place = [], ?Business $existingBusiness = null, ?string $category = null): array
     {
         if (empty($details)) {
-            return ['is_new' => false, 'is_updated' => false];
+            return [];
         }
 
-        $business = $existingBusiness ?? Business::firstOrNew(['place_id' => $details['place_id']]);
-        $isNew = !$business->exists;
-        $isUpdated = false;
-
-        // Generate indicators using detection service
+        $business = $existingBusiness ?? new Business();
+        
+        // Extract basic information
+        $business->name = $details['name'] ?? '';
+        $business->place_id = $details['place_id'] ?? '';
+        $business->address = $details['formatted_address'] ?? '';
+        $business->rating = $details['rating'] ?? null;
+        $business->review_count = $details['user_ratings_total'] ?? 0;
+        
+        // Extract location data
+        if (isset($details['geometry']['location'])) {
+        $business->lat = $details['geometry']['location']['lat'];
+        $business->lng = $details['geometry']['location']['lng'];
+        }
+        
+        // Extract area from address
+        $business->area = $this->extractAreaFromAddress($business->address);
+        
+        // Extract types
+        // $business->types = json_encode($details['types'] ?? []); // Column doesn't exist
+        
+        // Assign category from scraping context
+        if ($category) {
+            $business->category = $category;
+        } elseif (isset($place['category'])) {
+            $business->category = $place['category'];
+        } else {
+            // Fallback: determine category from Google types
+            $business->category = $this->determineCategoryFromTypes($details['types'] ?? []);
+        }
+        
+        // Generate Google Maps URL
+        $business->google_maps_url = $this->generateGoogleMapsUrl($details);
+        
+        // Generate and save indicators
         $reviews = $details['reviews'] ?? [];
         $photos = $details['photos'] ?? [];
-        $indicators = $this->detectionService->generateBusinessIndicators($business, $details, $reviews, $photos);
-
-        // Prepare data for update
-        $data = [
-            'name' => $details['name'],
-            'types' => $details['types'] ?? [],
-            'address' => $details['formatted_address'] ?? '',
-            'phone' => $details['formatted_phone_number'] ?? null,
-            'website' => $details['website'] ?? null,
-            'area' => $this->extractAreaFromAddress($details['formatted_address'] ?? ''),
-            'lat' => $details['geometry']['location']['lat'] ?? null,
-            'lng' => $details['geometry']['location']['lng'] ?? null,
-            'rating' => $details['rating'] ?? null,
-            'review_count' => $details['user_ratings_total'] ?? 0,
-            'opening_hours' => $details['opening_hours'] ?? null,
-            'price_level' => $details['price_level'] ?? null,
-            'last_fetched' => now(),
-            'indicators' => $indicators,
-            'scraped_count' => $business->scraped_count + 1,
-            'last_update_type' => $this->currentSession->session_type,
-            'google_maps_url' => $this->generateGoogleMapsUrl($details),
-        ];
-
-        // Set first_seen for new businesses
-        if ($isNew) {
-            $data['first_seen'] = now();
+        $business->indicators = $this->detectionService->generateBusinessIndicators($business, $details, $reviews, $photos);
+        
+        // Set timestamps
+        if (!$business->exists) {
+            $business->first_seen = now();
         }
-
-        // Check if data has changed (for existing businesses)
-        if (!$isNew) {
-            $hasChanges = false;
-            foreach ($data as $key => $value) {
-                if ($business->$key != $value) {
-                    $hasChanges = true;
-                    break;
-                }
-            }
-            $isUpdated = $hasChanges;
-        }
-
-        $business->fill($data);
+        $business->last_fetched = now();
+        
+        // Save the business
         $business->save();
 
-        return [
-            'is_new' => $isNew,
-            'is_updated' => $isUpdated,
-            'business' => $business
-        ];
+        return $business->toArray();
     }
 
     /**
-     * Generate optimal grid points for complete coverage of a region
-     * Ensures no businesses are missed by using adaptive grid based on area size
+     * Basic pre-filtering berdasarkan nama bisnis (berlaku untuk SEMUA kategori)
+     * Filtering awal sebelum Place Details untuk save API cost
+     */
+    private function matchesCategoryBasic(array $place, string $category, CategoryMapping $categoryMapping): bool
+    {
+        $name = strtolower($place['name'] ?? '');
+        
+        // Ambil semua keywords dari category mapping
+        $allKeywords = $categoryMapping->getAllKeywordsAttribute();
+        
+        // Jika nama mengandung salah satu keyword kategori, accept
+        foreach ($allKeywords as $keyword) {
+            if (strpos($name, strtolower($keyword)) !== false) {
+                return true; // Match keyword kategori yang diminta
+            }
+        }
+        
+        // Jika tidak ada keyword match, cek apakah ada keyword kategori lain yang LEBIH kuat
+        // Ini untuk reject bisnis yang jelas-jelas kategori lain
+        $competingCategories = [
+            'Café' => ['cafe', 'coffee', 'kopi'],
+            'Restoran' => ['restaurant', 'restoran', 'warung'],
+            'Sekolah' => ['school', 'sekolah', 'universitas'],
+            'Villa' => ['villa'],
+            'Hotel' => ['hotel', 'resort'],
+            'Popular Spot' => ['beach', 'pantai', 'temple', 'pura', 'waterfall'],
+            'Lainnya' => ['gym', 'spa', 'coworking', 'mall', 'bar', 'club']
+        ];
+        
+        // Jika nama mengandung keyword kategori lain yang kuat, reject
+        foreach ($competingCategories as $otherCategory => $keywords) {
+            if ($otherCategory === $category) continue; // Skip kategori yang diminta
+            
+            foreach ($keywords as $keyword) {
+                if (strpos($name, $keyword) !== false) {
+                    // Nama mengandung keyword kategori lain
+                    Log::debug("Pre-filter: Competing category detected", [
+                        'name' => $place['name'],
+                        'requested' => $category,
+                        'detected' => $otherCategory,
+                        'keyword' => $keyword
+                    ]);
+                    return false; // Reject karena jelas kategori lain
+                }
+            }
+        }
+        
+        // Jika tidak ada keyword match tapi juga tidak ada competing keyword
+        // Accept untuk divalidasi lebih lanjut di post-filtering
+        return true;
+    }
+
+    /**
+     * Determine category from Google Place types with priority logic
+     */
+    private function determineCategoryFromTypes(array $types): string
+    {
+        // Map Google types ke kategori kita
+        $typeMapping = [
+            'cafe' => 'Café',
+            'coffee_shop' => 'Café',
+            'restaurant' => 'Restoran',
+            'food' => 'Restoran',
+            'school' => 'Sekolah',
+            'university' => 'Sekolah',
+            'lodging' => 'Hotel', // Default ke Hotel, akan di-override jika ada 'villa' keyword
+            'hotel' => 'Hotel',
+            'tourist_attraction' => 'Popular Spot',
+            'point_of_interest' => 'Popular Spot',
+            'park' => 'Popular Spot',
+            'natural_feature' => 'Popular Spot',
+            'bar' => 'Lainnya',
+            'night_club' => 'Lainnya',
+            'shopping_mall' => 'Lainnya',
+            'gym' => 'Lainnya',
+            'spa' => 'Lainnya',
+            'coworking_space' => 'Lainnya'
+        ];
+        
+        // Priority order: type yang lebih spesifik dapat priority lebih tinggi
+        $priorityMapping = [
+            'hotel' => 10,
+            'cafe' => 9,
+            'coffee_shop' => 9,
+            'restaurant' => 8,
+            'school' => 10,
+            'university' => 10,
+            'tourist_attraction' => 7,
+            'lodging' => 5,  // Lower priority (generic)
+            'food' => 6,     // Lower priority (generic)
+            'point_of_interest' => 4,  // Lowest priority (very generic)
+            'bar' => 8,
+            'night_club' => 8,
+            'gym' => 8,
+            'spa' => 8,
+            'coworking_space' => 8,
+            'shopping_mall' => 8,
+            'park' => 7,
+            'natural_feature' => 7
+        ];
+        
+        $matchedTypes = [];
+        foreach ($types as $type) {
+            if (isset($typeMapping[$type])) {
+                $category = $typeMapping[$type];
+                $priority = $priorityMapping[$type] ?? 1;
+                
+                // Jika belum ada atau priority lebih tinggi, update
+                if (!isset($matchedTypes[$category]) || $matchedTypes[$category] < $priority) {
+                    $matchedTypes[$category] = $priority;
+                }
+            }
+        }
+        
+        // Return kategori dengan priority tertinggi
+        if (!empty($matchedTypes)) {
+            arsort($matchedTypes);
+            return key($matchedTypes);
+        }
+        
+        return 'unknown';
+    }
+
+    /**
+     * Generate grid points for comprehensive coverage
      */
     private function generateGridPoints(BaliRegion $region): array
     {
         $points = [];
         $centerLat = (float) $region->center_lat;
         $centerLng = (float) $region->center_lng;
+        $radius = (int) $region->search_radius;
         
-        // Calculate optimal grid size based on region area and Google Places limit (60 results)
+        // Calculate optimal grid size based on radius
         $gridSize = $this->calculateOptimalGridSize($region);
-        $overlap = 0.3; // 30% overlap to ensure no gaps
-        $gridSpacing = $gridSize * (1 - $overlap);
         
-        // Calculate bounding box for the region
-        $boundingBox = $this->calculateRegionBoundingBox($region);
+        // Generate grid points
+        $latStep = $gridSize / 111000; // Approximate meters to degrees
+        $lngStep = $gridSize / (111000 * cos(deg2rad($centerLat)));
         
-        // Generate grid points to cover entire bounding box
-        $latStep = $gridSpacing / 111000; // Convert meters to degrees latitude
-        $lngStep = $gridSpacing / (111000 * cos(deg2rad($centerLat))); // Adjust for longitude
+        $latStart = $centerLat - ($radius / 111000);
+        $latEnd = $centerLat + ($radius / 111000);
+        $lngStart = $centerLng - ($radius / (111000 * cos(deg2rad($centerLat))));
+        $lngEnd = $centerLng + ($radius / (111000 * cos(deg2rad($centerLat))));
         
-        $latStart = $boundingBox['min_lat'];
-        $latEnd = $boundingBox['max_lat'];
-        $lngStart = $boundingBox['min_lng'];
-        $lngEnd = $boundingBox['max_lng'];
-        
-        $pointId = 1;
         for ($lat = $latStart; $lat <= $latEnd; $lat += $latStep) {
             for ($lng = $lngStart; $lng <= $lngEnd; $lng += $lngStep) {
-                // Skip points that are too far from center (outside region)
-                $distanceFromCenter = $this->calculateDistance($centerLat, $centerLng, $lat, $lng);
-                if ($distanceFromCenter > $region->search_radius * 1.2) { // 20% buffer
-                    continue;
-                }
-                
                 $points[] = [
-                    'id' => $pointId++,
                     'lat' => $lat,
                     'lng' => $lng,
-                    'radius' => $gridSize,
-                    'distance_from_center' => $distanceFromCenter
+                    'radius' => $gridSize
                 ];
             }
         }
-        
-        Log::info("Generated grid for {$region->name}", [
-            'total_points' => count($points),
-            'grid_size' => $gridSize,
-            'grid_spacing' => $gridSpacing,
-            'bounding_box' => $boundingBox
-        ]);
         
         return $points;
     }
 
     /**
-     * Subdivide dense area when hitting 60 result limit
-     * Splits area into 4 smaller grids to ensure no businesses are missed
+     * Subdivide dense areas for better coverage
      */
     private function subdivideDenseArea(float $lat, float $lng, int $radius, ?string $type): array
     {
         $subdividedResults = [];
+        $subRadius = $radius / 2;
         
-        // Calculate subdivision radius (half of original)
-        $subRadius = max(1000, $radius / 2); // Minimum 1km radius
-        
-        // Calculate offsets for 4 quadrants
-        $offset = $radius * 0.25; // 25% of original radius for offset
-        
-        $subdivisions = [
-            // Northeast quadrant
-            ['lat' => $lat + ($offset / 111000), 'lng' => $lng + ($offset / (111000 * cos(deg2rad($lat))))],
-            // Northwest quadrant  
-            ['lat' => $lat + ($offset / 111000), 'lng' => $lng - ($offset / (111000 * cos(deg2rad($lat))))],
-            // Southeast quadrant
-            ['lat' => $lat - ($offset / 111000), 'lng' => $lng + ($offset / (111000 * cos(deg2rad($lat))))],
-            // Southwest quadrant
-            ['lat' => $lat - ($offset / 111000), 'lng' => $lng - ($offset / (111000 * cos(deg2rad($lat))))],
+        // Create 4 sub-areas
+        $subAreas = [
+            ['lat' => $lat - $subRadius/111000, 'lng' => $lng - $subRadius/(111000 * cos(deg2rad($lat))), 'radius' => $subRadius],
+            ['lat' => $lat + $subRadius/111000, 'lng' => $lng - $subRadius/(111000 * cos(deg2rad($lat))), 'radius' => $subRadius],
+            ['lat' => $lat - $subRadius/111000, 'lng' => $lng + $subRadius/(111000 * cos(deg2rad($lat))), 'radius' => $subRadius],
+            ['lat' => $lat + $subRadius/111000, 'lng' => $lng + $subRadius/(111000 * cos(deg2rad($lat))), 'radius' => $subRadius],
         ];
         
-        foreach ($subdivisions as $subPoint) {
+        foreach ($subAreas as $subArea) {
             try {
                 $result = $this->googlePlacesService->nearbySearch(
-                    $subPoint['lat'],
-                    $subPoint['lng'],
-                    $subRadius,
-                    ['type' => $type]
+                    $subArea['lat'],
+                    $subArea['lng'],
+                    $subArea['radius'],
+                    $type ? ['type' => $type] : []
                 );
                 
                 if (isset($result['results'])) {
-                    $subResultsCount = count($result['results']);
-                    
-                    Log::info("Subdivision search", [
-                        'lat' => $subPoint['lat'],
-                        'lng' => $subPoint['lng'],
-                        'radius' => $subRadius,
-                        'results_count' => $subResultsCount
-                    ]);
-                    
-                    // If subdivision still hits limit, recursively subdivide further
-                    if ($subResultsCount >= 60 && $subRadius > 1000) {
-                        $furtherSubdivided = $this->subdivideDenseArea(
-                            $subPoint['lat'], 
-                            $subPoint['lng'], 
-                            $subRadius, 
-                            $type
-                        );
-                        $subdividedResults = array_merge($subdividedResults, $furtherSubdivided);
-                    } else {
                         $subdividedResults = array_merge($subdividedResults, $result['results']);
-                    }
                 }
                 
-                // Small delay between subdivision requests
-                usleep(50000); // 0.05 second
+                usleep(100000); // Rate limiting
                 
             } catch (\Exception $e) {
                 Log::warning("Subdivision search failed: " . $e->getMessage());
@@ -786,28 +1261,20 @@ class ScrapingOrchestratorService
     private function calculateOptimalGridSize(BaliRegion $region): int
     {
         // Adaptive grid size based on search radius and priority
-        // Smaller grid = better coverage but more API calls
+        $baseRadius = (int) $region->search_radius;
         
-        // Adaptive grid size optimized for 60 result limit
-        // Smaller grid = less likely to hit 60 limit, better coverage
-        switch ($region->priority) {
-            case 1: // Badung - very high density, very small grid
-                return 2000; // 2km grid (reduced from 2.5km)
-            case 2: // Denpasar - high density urban center
-                return 1500; // 1.5km grid (reduced from 2km)
-            case 3: // Gianyar - tourist areas, medium-high density
-                return 2500; // 2.5km grid (reduced from 3km)
-            case 4: // Tabanan - moderate density
-                return 3000; // 3km grid (reduced from 3.5km)
-            case 5: // Buleleng - large area, moderate density
-                return 3500; // 3.5km grid (reduced from 4km)
-            default: // Other regions
-                return 3000; // 3km grid (reduced from 3.5km)
+        // Smaller grid for smaller regions
+        if ($baseRadius <= 5000) {
+            return 2000; // 2km grid
+        } elseif ($baseRadius <= 10000) {
+            return 3000; // 3km grid
+        } else {
+            return 5000; // 5km grid
         }
     }
 
     /**
-     * Calculate bounding box for a region
+     * Calculate region bounding box
      */
     private function calculateRegionBoundingBox(BaliRegion $region): array
     {
@@ -815,20 +1282,16 @@ class ScrapingOrchestratorService
         $centerLng = (float) $region->center_lng;
         $radius = (int) $region->search_radius;
         
-        // Convert radius from meters to degrees
-        $latRadius = $radius / 111000;
-        $lngRadius = $radius / (111000 * cos(deg2rad($centerLat)));
-        
         return [
-            'min_lat' => $centerLat - $latRadius,
-            'max_lat' => $centerLat + $latRadius,
-            'min_lng' => $centerLng - $lngRadius,
-            'max_lng' => $centerLng + $lngRadius,
+            'north' => $centerLat + ($radius / 111000),
+            'south' => $centerLat - ($radius / 111000),
+            'east' => $centerLng + ($radius / (111000 * cos(deg2rad($centerLat)))),
+            'west' => $centerLng - ($radius / (111000 * cos(deg2rad($centerLat))))
         ];
     }
 
     /**
-     * Calculate distance between two coordinates in meters
+     * Calculate distance between two points
      */
     private function calculateDistance(float $lat1, float $lng1, float $lat2, float $lng2): float
     {
@@ -838,7 +1301,7 @@ class ScrapingOrchestratorService
         $lat2 = (float) $lat2;
         $lng2 = (float) $lng2;
         
-        $earthRadius = 6371000; // Earth radius in meters
+        $earthRadius = 6371000; // Earth's radius in meters
         
         $dLat = deg2rad($lat2 - $lat1);
         $dLng = deg2rad($lng2 - $lng1);
@@ -850,40 +1313,29 @@ class ScrapingOrchestratorService
     }
 
     /**
-     * Get hot zones for a region (areas with high growth)
+     * Get hot zones for priority scraping
      */
     private function getHotZones(BaliRegion $region): array
     {
         // For now, return some sample hot zones
-        // In a real implementation, this would analyze historical data
+        // In the future, this could be based on business density or other factors
         return [
-            [
-                'lat' => $region->center_lat + 0.01,
-                'lng' => $region->center_lng + 0.01,
-                'radius' => 3000
-            ],
-            [
-                'lat' => $region->center_lat - 0.01,
-                'lng' => $region->center_lng - 0.01,
-                'radius' => 3000
-            ]
+            ['lat' => (float) $region->center_lat, 'lng' => (float) $region->center_lng, 'radius' => 2000],
         ];
     }
 
     /**
-     * Get priority regions for weekly updates
+     * Get priority regions for scraping
      */
     private function getPriorityRegions(): array
     {
         return BaliRegion::where('type', 'kabupaten')
-            ->orderBy('priority')
-            ->limit(3)
-            ->pluck('name')
-            ->toArray();
+            ->orderBy('priority', 'desc')
+            ->get();
     }
 
     /**
-     * Get all categories
+     * Get all available categories
      */
     private function getAllCategories(): array
     {
@@ -891,19 +1343,26 @@ class ScrapingOrchestratorService
     }
 
     /**
-     * Extract area from address
+     * Extract area from address string
      */
     private function extractAreaFromAddress(string $address): ?string
     {
         $parts = array_map('trim', explode(',', $address));
+        
+        // Look for specific Bali areas
+        $baliAreas = [
+            'Denpasar', 'Badung', 'Gianyar', 'Tabanan', 'Klungkung', 'Bangli', 'Karangasem', 'Buleleng', 'Jembrana'
+        ];
 
         foreach ($parts as $part) {
-            if (str_contains($part, 'Kota') || str_contains($part, 'Kabupaten')) {
-                return $part;
+            foreach ($baliAreas as $area) {
+                if (stripos($part, $area) !== false) {
+                    return $area;
+                }
             }
         }
-
-        return $parts[count($parts) - 2] ?? $address;
+        
+        return 'Bali';
     }
 
     /**
@@ -912,57 +1371,48 @@ class ScrapingOrchestratorService
     private function generateGoogleMapsUrl(array $details): ?string
     {
         $name = $details['name'] ?? '';
-        $address = $details['formatted_address'] ?? '';
+        $placeId = $details['place_id'] ?? '';
         
-        if ($name && $address) {
-            return "https://www.google.com/maps/search/?api=1&query=" . urlencode($name . ', ' . $address);
-        }
-        
+        if (empty($name) || empty($placeId)) {
         return null;
     }
 
-    /**
-     * Get OPTIMIZED queries for new businesses with time filters
-     * Enhanced with year filters to reduce false positives
-     */
-    private function getNewBusinessQueries(string $category, string $regionName): array
-    {
-        $currentYear = date('Y');
-        
-        return [
-            // Indonesian with year filter - highest precision
-            "{$category} baru dibuka {$regionName} {$currentYear}",
-            // English with year filter - second highest precision  
-            "new {$category} {$regionName} opened {$currentYear}",
-            // Recently opened - catches soft/grand openings
-            "recently opened {$category} {$regionName}",
-            // Indonesian synonym - additional coverage
-            "{$category} terbaru {$regionName}",
-            // Grand opening - catches announcements
-            "grand opening {$category} {$regionName}",
-        ];
+        $encodedName = urlencode($name);
+        return "https://www.google.com/maps/place/?q=place_id:{$placeId}";
     }
 
+
     /**
-     * IMPROVED: Smart pre-filtering for new businesses
-     * Uses batch DB checks and strict keyword matching to reduce false positives
-     * 
-     * @param array $place
-     * @param string $category
-     * @param array $existingPlaceIds Pre-loaded place IDs (for batch efficiency)
-     * @param BaliRegion|null $region For geolocation validation
-     * @return bool
+     * Check if a place is likely a new business
      */
     private function isNewBusiness(array $place, string $category, array $existingPlaceIds = [], ?BaliRegion $region = null): bool
     {
         $placeId = $place['place_id'];
         
-        // 1. Check against pre-loaded existing place IDs (NO database query in loop!)
+        // 1. Check existing place IDs (NO database query)
         if (in_array($placeId, $existingPlaceIds)) {
             return false;
         }
         
-        // 2. Geolocation validation - skip if outside target area
+        // 2. PRE-FILTER: Check business_status FIRST (before Place Details call!)
+        $businessStatus = $place['business_status'] ?? '';
+        
+        // Strong signal: OPENED_RECENTLY
+        if ($businessStatus === 'OPENED_RECENTLY') {
+            Log::debug("Strong new business signal", [
+                'place_id' => $placeId,
+                'name' => $place['name'] ?? 'Unknown',
+                'status' => 'OPENED_RECENTLY'
+            ]);
+            return true; // Prioritize checking details for this
+        }
+        
+        // Skip if closed
+        if (in_array($businessStatus, ['CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY'])) {
+            return false;
+        }
+        
+        // 3. Geolocation validation
         if ($region && isset($place['geometry']['location'])) {
             $placeLat = $place['geometry']['location']['lat'];
             $placeLng = $place['geometry']['location']['lng'];
@@ -974,56 +1424,25 @@ class ScrapingOrchestratorService
                 (float) $placeLng
             );
             
-            // Skip if outside region radius (with 20% buffer)
-            if ($distance > $region->search_radius * 1.2) {
-                Log::debug("Skipped: outside region radius", [
-                    'place' => $place['name'] ?? 'Unknown',
-                    'distance' => round($distance),
-                    'max_distance' => $region->search_radius * 1.2
-                ]);
+            if ($distance > $region->search_radius + 2000) {
                 return false;
             }
         }
         
-        // 3. Business status validation
-        $businessStatus = $place['business_status'] ?? '';
-        if (in_array($businessStatus, ['CLOSED_TEMPORARILY', 'CLOSED_PERMANENTLY'])) {
-            return false;
+        // 4. Check for new business keywords in name/types
+        $keywords = ['new', 'baru', 'grand opening', 'recently opened', 'dibuka'];
+        $name = strtolower($place['name'] ?? '');
+        
+        foreach ($keywords as $keyword) {
+            if (strpos($name, $keyword) !== false) {
+            return true;
+        }
         }
         
-        // 4. Review count pre-filter - skip obvious established businesses
+        // 5. Default: check if has low review count (early stage indicator)
         $reviewCount = $place['user_ratings_total'] ?? 0;
-        if ($reviewCount > 50) {
-            Log::debug("Skipped: too many reviews", [
-                'place' => $place['name'] ?? 'Unknown',
-                'review_count' => $reviewCount
-            ]);
-            return false;
-        }
-        
-        // 5. STRICT keyword matching - only word boundaries
-        $name = $place['name'] ?? '';
-        
-        // Pattern 1: "baru [dibuka|buka|opening]" or "[new|newly] opened"
-        if (preg_match('/\b(baru\s+(dibuka|buka|opening)|terbaru\s+buka|(new|newly)\s+open(ed|ing)?)\b/iu', $name)) {
-            return true;
-        }
-        
-        // Pattern 2: "grand opening", "soft opening", "now open"
-        if (preg_match('/\b(grand|soft|now)\s+open(ing|ed)?\b/iu', $name)) {
-            return true;
-        }
-        
-        // 6. STRICT review count - only VERY new businesses
-        // Changed: review < 5 (from < 10) AND rating exists (not just placeholder)
-        $hasRating = isset($place['rating']) && $place['rating'] > 0;
-        if ($reviewCount > 0 && $reviewCount < 5 && $hasRating) {
-            return true;
-        }
-        
-        // 7. No reviews at all - potentially very new
-        if ($reviewCount === 0 && $businessStatus === 'OPERATIONAL') {
-            return true;
+        if ($reviewCount > 0 && $reviewCount < 10) {
+            return true; // Worth checking details
         }
 
         return false;
@@ -1048,90 +1467,100 @@ class ScrapingOrchestratorService
 
         // Check review count (new businesses typically have few reviews)
         $reviewCount = $details['user_ratings_total'] ?? 0;
-        if ($reviewCount < 5) {
-            $confidence += 40;
-        } elseif ($reviewCount < 15) {
-            $confidence += 20;
+        if ($reviewCount === 0) {
+            $confidence += 40; // No reviews = very new
+        } elseif ($reviewCount < 5) {
+            $confidence += 25; // Few reviews = new
+        } elseif ($reviewCount < 10) {
+            $confidence += 15; // Some reviews = relatively new
         }
 
         // Check business status
         $businessStatus = $details['business_status'] ?? '';
-        if ($businessStatus === 'OPENED_RECENTLY') {
-            $confidence += 50;
+        if ($businessStatus === 'OPERATIONAL') {
+            $confidence += 20; // Operational is good
         }
 
-        // Check if newly discovered (not in database)
-        $existingBusiness = Business::where('place_id', $details['place_id'])->first();
-        if (!$existingBusiness) {
-            $confidence += 20;
-        }
-
-        return min(100, $confidence);
+        return min($confidence, 100); // Cap at 100%
     }
 
     /**
-     * Process new business data specifically
+     * Process new business data
      */
     private function processNewBusinessData(array $details, array $place = []): array
     {
         if (empty($details)) {
-            return ['is_new' => false, 'is_updated' => false];
+            return [];
         }
 
-        $business = Business::firstOrNew(['place_id' => $details['place_id']]);
-        $isNew = !$business->exists;
-        $isUpdated = false;
-
-        // Generate indicators using detection service
-        $reviews = $details['reviews'] ?? [];
-        $photos = $details['photos'] ?? [];
-        $indicators = $this->detectionService->generateBusinessIndicators($business, $details, $reviews, $photos);
-
-        // Prepare data for update
-        $data = [
-            'name' => $details['name'],
-            'types' => $details['types'] ?? [],
-            'address' => $details['formatted_address'] ?? '',
-            'phone' => $details['formatted_phone_number'] ?? null,
-            'website' => $details['website'] ?? null,
-            'area' => $this->extractAreaFromAddress($details['formatted_address'] ?? ''),
-            'lat' => $details['geometry']['location']['lat'] ?? null,
-            'lng' => $details['geometry']['location']['lng'] ?? null,
-            'rating' => $details['rating'] ?? null,
-            'review_count' => $details['user_ratings_total'] ?? 0,
-            'opening_hours' => $details['opening_hours'] ?? null,
-            'price_level' => $details['price_level'] ?? null,
-            'last_fetched' => now(),
-            'indicators' => $indicators,
-            'scraped_count' => $business->scraped_count + 1,
-            'last_update_type' => $this->currentSession->session_type,
-            'google_maps_url' => $this->generateGoogleMapsUrl($details),
-        ];
-
-        // Set first_seen for new businesses
-        if ($isNew) {
-            $data['first_seen'] = now();
+        $business = new Business();
+        $business->name = $details['name'] ?? '';
+        $business->place_id = $details['place_id'] ?? '';
+        $business->address = $details['formatted_address'] ?? '';
+        $business->rating = $details['rating'] ?? null;
+        $business->review_count = $details['user_ratings_total'] ?? 0;
+        
+        if (isset($details['geometry']['location'])) {
+        $business->lat = $details['geometry']['location']['lat'];
+        $business->lng = $details['geometry']['location']['lng'];
         }
-
-        // Check if data has changed (for existing businesses)
-        if (!$isNew) {
-            $hasChanges = false;
-            foreach ($data as $key => $value) {
-                if ($business->$key != $value) {
-                    $hasChanges = true;
-                    break;
-                }
-            }
-            $isUpdated = $hasChanges;
-        }
-
-        $business->fill($data);
+        
+        $business->area = $this->extractAreaFromAddress($business->address);
+        // $business->types = json_encode($details['types'] ?? []); // Column doesn't exist
+        $business->google_maps_url = $this->generateGoogleMapsUrl($details);
+        $business->first_seen = now();
+        $business->last_fetched = now();
+        
         $business->save();
 
-        return [
-            'is_new' => $isNew,
-            'is_updated' => $isUpdated,
-            'business' => $business
-        ];
+        return $business->toArray();
+    }
+    
+    /**
+     * Check for viral indicators in business name
+     */
+    private function checkViralIndicators(array $place, int $reviewCount, int $reviewThreshold): bool
+    {
+        $name = strtolower($place['name'] ?? '');
+        
+        // Medium review count (16-100): check ONLY if has keyword indicators
+        if ($reviewCount >= $reviewThreshold && $reviewCount <= 100) {
+            $newKeywords = [
+                'new', 'baru', 'terbaru',
+                'grand opening', 'soft opening',
+                'recently opened', 'baru dibuka', 'baru buka',
+                'coming soon', 'segera dibuka',
+                'opening soon', 'dibuka baru-baru ini',
+                '2024', '2025'
+            ];
+            
+            foreach ($newKeywords as $keyword) {
+                if (strpos($name, $keyword) !== false) {
+                    Log::debug("Viral keyword detected", [
+                        'name' => $place['name'] ?? 'Unknown',
+                        'keyword' => $keyword,
+                        'review_count' => $reviewCount
+                    ]);
+                    return true;
+                }
+            }
+        }
+        
+        // High review count (>100): skip unless very specific indicators
+        if ($reviewCount > 100) {
+            $specificNewKeywords = ['2024', '2025', 'grand opening', 'soft opening'];
+            foreach ($specificNewKeywords as $keyword) {
+                if (strpos($name, $keyword) !== false) {
+                    Log::debug("Specific new keyword detected", [
+                        'name' => $place['name'] ?? 'Unknown',
+                        'keyword' => $keyword,
+                        'review_count' => $reviewCount
+                    ]);
+                    return true;
+                }
+            }
+        }
+        
+        return false;
     }
 }

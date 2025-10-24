@@ -34,6 +34,8 @@ const CATEGORY_ICONS: { [key: string]: string } = {
   "Sekolah": "🏫",
   "Villa": "🏡",
   "Hotel": "🏨",
+  "Bar": "🍻",
+  "Bakery": "🥖",
   "Popular Spot": "📍",
   "Lainnya": "🏢",
 };
@@ -54,12 +56,10 @@ const CategoryMultiSelect: React.FC<Props> = ({
   const fetchCategories = async () => {
     setLoading(true);
     try {
-      // Fetch from CategoryMapping table via API
-      const response = await axios.get(`${API}/scrape/categories`);
+      // Fetch from actual business data via filter-options API
+      const response = await axios.get(`${API}/businesses/filter-options`);
       
-      const categoriesData = Array.isArray(response.data) 
-        ? response.data 
-        : [];
+      const categoriesData = response.data.categories || [];
       
       const mappedCategories = categoriesData.map((cat: string) => ({
         value: cat,

@@ -4,10 +4,18 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\BaliRegion;
+use App\Models\Business;
+use App\Services\LocationParserService;
 use Illuminate\Support\Facades\Log;
 
 class RegionController extends Controller
 {
+    private LocationParserService $locationParser;
+
+    public function __construct(LocationParserService $locationParser)
+    {
+        $this->locationParser = $locationParser;
+    }
     /**
      * Get all Kabupaten
      * 
@@ -100,25 +108,83 @@ class RegionController extends Controller
     }
 
     /**
-     * Get Desa by Kecamatan ID
+     * Get desa list for specific kabupaten and kecamatan
+     * Parses desa names from business addresses dynamically
      * 
-     * @param int $kecamatanId
+     * @param string $kabupaten
+     * @param string $kecamatan
      * @return \Illuminate\Http\JsonResponse
      */
-    public function getDesa($kecamatanId)
+    public function getDesa(string $kabupaten, string $kecamatan)
     {
         try {
-            // Get desa (future implementation - data not in seeder yet)
-            $desa = BaliRegion::desa()
-                ->where('parent_id', $kecamatanId)
-                ->orderBy('name', 'asc')
-                ->get(['id', 'name', 'parent_id', 'center_lat', 'center_lng']);
+            // Query businesses that match kabupaten and kecamatan
+            $businesses = Business::whereNotNull('address')
+                ->where(function($query) use ($kabupaten) {
+                    $query->where('area', 'LIKE', "%{$kabupaten}%")
+                          ->orWhere('address', 'LIKE', "%{$kabupaten}%");
+                })
+                ->where(function($query) use ($kecamatan) {
+                    $query->where('address', 'LIKE', "%{$kecamatan}%");
+                })
+                ->get(['id', 'address', 'area']);
+
+            // Parse desa from each business address
+            $desaCounts = [];
+            
+            foreach ($businesses as $business) {
+                $locationData = $this->locationParser->parseLocationHierarchy($business->address);
+                
+                // Only count if the parsed kabupaten and kecamatan match
+                if ($locationData['kabupaten'] && $locationData['kecamatan'] && $locationData['desa']) {
+                    $parsedKabupaten = $this->normalizeName($locationData['kabupaten']);
+                    $parsedKecamatan = $this->normalizeName($locationData['kecamatan']);
+                    $desa = $locationData['desa'];
+                    
+                    $targetKabupaten = $this->normalizeName($kabupaten);
+                    $targetKecamatan = $this->normalizeName($kecamatan);
+                    
+                    // Check if parsed location matches the target
+                    if ($parsedKabupaten === $targetKabupaten && $parsedKecamatan === $targetKecamatan) {
+                        // Apply confidence filter - use 0% threshold for count calculation
+                        // to show all desa that have data, regardless of confidence
+                        $confidence = $business->indicators['new_business_confidence'] ?? 0;
+                        $confidenceThreshold = 0; // Show all desa in dropdown, filter by confidence in main query
+                        
+                        if ($confidence >= $confidenceThreshold) {
+                            if (!isset($desaCounts[$desa])) {
+                                $desaCounts[$desa] = 0;
+                            }
+                            $desaCounts[$desa]++;
+                        }
+                    }
+                }
+            }
+
+            // Convert to array format and sort, but only include desa with actual data
+            $desaList = collect($desaCounts)
+                ->filter(function($count, $name) {
+                    // Only include desa that have actual business data
+                    return $count > 0;
+                })
+                ->map(function($count, $name) {
+                    return [
+                        'name' => $name,
+                        'count' => $count
+                    ];
+                })
+                ->sortBy('name')
+                ->values();
 
             return response()->json([
                 'success' => true,
-                'data' => $desa,
-                'count' => $desa->count(),
-                'note' => $desa->isEmpty() ? 'Desa data not yet available in database' : null
+                'data' => $desaList,
+                'meta' => [
+                    'kabupaten' => $kabupaten,
+                    'kecamatan' => $kecamatan,
+                    'total_businesses' => $businesses->count(),
+                    'desa_count' => $desaList->count()
+                ]
             ]);
 
         } catch (\Exception $e) {
@@ -126,7 +192,7 @@ class RegionController extends Controller
             
             return response()->json([
                 'success' => false,
-                'message' => 'Failed to fetch desa',
+                'message' => 'Failed to fetch desa list',
                 'error' => $e->getMessage()
             ], 500);
         }
@@ -236,6 +302,20 @@ class RegionController extends Controller
                 'error' => $e->getMessage()
             ], 500);
         }
+    }
+
+    /**
+     * Normalize name for comparison (remove common variations)
+     */
+    private function normalizeName(string $name): string
+    {
+        $name = trim($name);
+        
+        // Remove common prefixes
+        $name = preg_replace('/^(Kabupaten|Kota|Kecamatan|Kec\.?)\s+/i', '', $name);
+        
+        // Convert to lowercase for comparison
+        return strtolower($name);
     }
 }
 

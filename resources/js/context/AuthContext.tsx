@@ -52,13 +52,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     axios.defaults.withCredentials = true;
     
     const initializeAuth = () => {
-      console.log('AuthContext: Starting initialization');
       const savedToken = localStorage.getItem("token");
       const savedUser = localStorage.getItem("user");
       
       if (savedToken && savedUser) {
-        console.log('AuthContext: Found saved token and user, setting state immediately');
-        
         // Set the user state immediately to prevent redirect
         setToken(savedToken);
         setUser(JSON.parse(savedUser));
@@ -68,12 +65,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setIsInitialized(true);
         setIsLoading(false);
         
-        console.log('AuthContext: State set, will verify token in background');
-        
         // Verify token in background without blocking UI
         setTimeout(async () => {
           try {
-            console.log('AuthContext: Verifying token in background...');
             const response = await axios.get(`${API}/auth/verify`, {
               headers: {
                 'Authorization': `Bearer ${savedToken}`,
@@ -81,11 +75,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
               }
             });
             
-            if (response.data.success) {
-              console.log('AuthContext: Token verification successful');
-            } else {
+            if (!response.data.success) {
               // Token is invalid, clear storage
-              console.log('AuthContext: Token verification failed - invalid token, clearing storage');
               setToken(null);
               setUser(null);
               localStorage.removeItem("token");
@@ -94,34 +85,20 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             }
           } catch (error) {
             // Check if it's a network error or server error
-            console.log('AuthContext: Token verification failed:', error);
-            
-            // If it's a network error (no response), keep the token and try again later
             if (error && typeof error === 'object' && 'response' in error) {
               const axiosError = error as any;
-              if (axiosError.response?.status >= 500) {
-                // Server error - keep token and try again
-                console.log('AuthContext: Server error during verification, keeping token for retry');
-              } else if (axiosError.response?.status === 401) {
+              if (axiosError.response?.status === 401) {
                 // Unauthorized - token is invalid
-                console.log('AuthContext: Token is invalid (401), clearing storage');
                 setToken(null);
                 setUser(null);
                 localStorage.removeItem("token");
                 localStorage.removeItem("user");
                 delete axios.defaults.headers.common['Authorization'];
-              } else {
-                // Other client errors - keep token
-                console.log('AuthContext: Client error during verification, keeping token');
               }
-            } else {
-              // Network error - keep token
-              console.log('AuthContext: Network error during verification, keeping token');
             }
           }
         }, 100);
       } else {
-        console.log('AuthContext: No saved token or user found');
         setIsInitialized(true);
         setIsLoading(false);
       }
@@ -135,10 +112,9 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const setupCSRF = async () => {
       try {
         // Get CSRF token from Laravel
-        const response = await axios.get(`${API.replace('/api', '')}/sanctum/csrf-cookie`);
-        console.log('CSRF cookie set successfully');
+        await axios.get(`${API.replace('/api', '')}/sanctum/csrf-cookie`);
       } catch (error) {
-        console.log('Failed to set CSRF cookie:', error);
+        // Silent fail for CSRF setup
       }
     };
     

@@ -7,7 +7,8 @@ import Layout from "../components/Layout";
 import HotZonesList from "../components/HotZonesList";
 import CategoryBreakdown from "../components/CategoryBreakdown";
 import GrowthMetrics from "../components/GrowthMetrics";
-import MultiLineTrendChart from "../components/MultiLineTrendChart";
+import LineChart from "../components/LineChart";
+import HierarchicalLocationFilter from "../components/HierarchicalLocationFilter";
 import { cleanAreaName } from "../lib/areaUtils";
 
 interface AnalyticsSummary {
@@ -56,32 +57,43 @@ const Analytics: React.FC = () => {
   const [kecamatanTrends, setKecamatanTrends] = useState<{ kecamatan: string[], trends: TrendDataPoint[] }>({ kecamatan: [], trends: [] });
   const [loading, setLoading] = useState(true);
   const [selectedPeriod, setSelectedPeriod] = useState<'7' | '30' | '90'>('90');
+  const [selectedKabupaten, setSelectedKabupaten] = useState<string | null>(null);
+  const [selectedKecamatan, setSelectedKecamatan] = useState<string | null>(null);
+  const [selectedDesa, setSelectedDesa] = useState<string | null>(null);
 
   const fetchAnalytics = useCallback(async () => {
     try {
       setLoading(true);
 
+      // Build query parameters
+      const params = new URLSearchParams({
+        period: selectedPeriod,
+        kabupaten: selectedKabupaten || '',
+        kecamatan: selectedKecamatan || '',
+        desa: selectedDesa || '',
+      });
+
       // Fetch summary
       const summaryResponse = await axios.get<AnalyticsSummary>(
-        `${API}/analytics/summary?period=${selectedPeriod}`
+        `${API}/analytics/summary?${params}`
       );
       setSummary(summaryResponse.data);
 
       // Fetch hot zones
       const hotZonesResponse = await axios.get<{ hot_zones: HotZone[] }>(
-        `${API}/analytics/hot-zones?period=${selectedPeriod}&limit=5`
+        `${API}/analytics/hot-zones?${params}&limit=5`
       );
       setHotZones(hotZonesResponse.data.hot_zones);
 
       // Fetch category trends (Sesuai Brief: Tren mingguan per kategori)
       const categoryTrendsResponse = await axios.get<{ categories: string[], trends: TrendDataPoint[] }>(
-        `${API}/analytics/trends-per-category?period=weekly&weeks=12`
+        `${API}/analytics/trends-per-category?period=weekly&weeks=12&${params}`
       );
       setCategoryTrends(categoryTrendsResponse.data);
 
       // Fetch kecamatan trends (Sesuai Brief: Tren mingguan per kecamatan)
       const kecamatanTrendsResponse = await axios.get<{ kecamatan: string[], trends: TrendDataPoint[] }>(
-        `${API}/analytics/trends-per-kecamatan?period=weekly&weeks=12&limit=5`
+        `${API}/analytics/trends-per-kecamatan?period=weekly&weeks=12&limit=5&${params}`
       );
       setKecamatanTrends(kecamatanTrendsResponse.data);
 
@@ -91,7 +103,7 @@ const Analytics: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [API, selectedPeriod]);
+  }, [API, selectedPeriod, selectedKabupaten, selectedKecamatan, selectedDesa]);
 
   useEffect(() => {
     fetchAnalytics();
@@ -171,7 +183,25 @@ const Analytics: React.FC = () => {
           </div>
         </Card>
 
-        {/* Growth Metrics */}
+        {/* Location Filter */}
+        <Card className="p-6 mb-6 rounded-2xl shadow-lg">
+          <h3 className="text-lg font-semibold text-gray-900 mb-4">📍 Filter Lokasi</h3>
+          <HierarchicalLocationFilter
+            kabupaten={selectedKabupaten || undefined}
+            kecamatan={selectedKecamatan || undefined}
+            desa={selectedDesa || undefined}
+            onKabupatenChange={(value) => {
+              setSelectedKabupaten(value);
+              setSelectedKecamatan(null); // Reset kecamatan when kabupaten changes
+              setSelectedDesa(null); // Reset desa when kabupaten changes
+            }}
+            onKecamatanChange={(value) => {
+              setSelectedKecamatan(value);
+              setSelectedDesa(null); // Reset desa when kecamatan changes
+            }}
+            onDesaChange={(value) => setSelectedDesa(value)}
+          />
+        </Card>
         <div className="mb-8">
           <GrowthMetrics
             totalBusinesses={summary.total_businesses}
@@ -183,19 +213,27 @@ const Analytics: React.FC = () => {
           />
         </div>
 
-        {/* Trend Charts - Sesuai Brief */}
+        {/* Chart.js Line Charts - Professional and Accurate */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          <MultiLineTrendChart
+          <LineChart
             data={categoryTrends.trends}
             lines={categoryTrends.categories}
             title="Tren Mingguan Penambahan per Kategori"
-            type="category"
+            height={450}
+            showGrid={true}
+            showLegend={true}
+            showTooltips={true}
+            animated={true}
           />
-          <MultiLineTrendChart
+          <LineChart
             data={kecamatanTrends.trends}
             lines={kecamatanTrends.kecamatan}
             title="Tren Mingguan per Kecamatan (Top 5)"
-            type="kecamatan"
+            height={450}
+            showGrid={true}
+            showLegend={true}
+            showTooltips={true}
+            animated={true}
           />
         </div>
 

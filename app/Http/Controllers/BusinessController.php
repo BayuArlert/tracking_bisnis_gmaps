@@ -11,7 +11,10 @@ class BusinessController extends Controller
 {
     public function index(Request $request)
     {
-        $query = Business::query();
+        $query = Business::query()->select([
+            'id', 'name', 'category', 'area', 'address', 'rating', 'review_count', 
+            'first_seen', 'lat', 'lng', 'indicators'
+        ]);
 
 
         // Apply filters
@@ -27,23 +30,35 @@ class BusinessController extends Controller
             $query->whereIn('category', $originalCategories);
         }
 
+        // Apply multi-category filter
+        if ($request->has('categories') && is_array($request->categories) && !empty($request->categories)) {
+            $allOriginalCategories = [];
+            foreach ($request->categories as $category) {
+                $originalCategories = $this->getOriginalCategoryNames($category);
+                $allOriginalCategories = array_merge($allOriginalCategories, $originalCategories);
+            }
+            $query->whereIn('category', array_unique($allOriginalCategories));
+        }
+
         if ($request->has('data_age') && $request->data_age !== 'all' && $request->data_age !== '') {
             $this->applyDataAgeFilter($query, $request->data_age);
         }
 
         // Apply hierarchical location filters (Kabupaten/Kecamatan)
         if ($request->has('kabupaten') && $request->kabupaten !== '') {
-            // Check both area field and address field for kabupaten with multiple format variations
+            // Strict kabupaten matching to avoid street names like "Tukad Badung"
             $query->where(function($q) use ($request) {
-                $kabupaten = $request->kabupaten;
-                
-                // Try different formats: "Kabupaten X", "Kota X", "X" (case insensitive)
-                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kabupaten ' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kota ' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ',%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ' %']);
+                $kabupaten = strtolower($request->kabupaten);
+                $q
+                  // Area field exact forms
+                  ->whereRaw('LOWER(area) LIKE ?', ['%kabupaten ' . $kabupaten . '%'])
+                  ->orWhereRaw('LOWER(area) LIKE ?', ['%kota ' . $kabupaten . '%'])
+                  // Address field - comma delimited segment or formal forms
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kabupaten ' . $kabupaten . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kota ' . $kabupaten . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['% ' . $kabupaten . ' regency%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $kabupaten . ', bali%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $kabupaten . ', indonesia%']);
             });
         }
         
@@ -62,10 +77,57 @@ class BusinessController extends Controller
             });
         }
 
+        // Add desa filter - Use same logic as count calculation
+        if ($request->has('desa') && $request->desa !== '') {
+            $query->where(function($q) use ($request) {
+                $desa = $request->desa;
+                $locationParser = app(\App\Services\LocationParserService::class);
+                
+                // Get all businesses and filter by parsed desa (same as count logic)
+                $allBusinesses = Business::whereNotNull('address')->get(['id', 'address']);
+                $matchingIds = [];
+                
+                foreach ($allBusinesses as $business) {
+                    $locationData = $locationParser->parseLocationHierarchy($business->address);
+                    
+                    if ($locationData['desa'] && strtolower($locationData['desa']) === strtolower($desa)) {
+                        $matchingIds[] = $business->id;
+                    }
+                }
+                
+                if (!empty($matchingIds)) {
+                    $q->whereIn('id', $matchingIds);
+                } else {
+                    // If no matches found, return empty result
+                    $q->whereRaw('1 = 0');
+                }
+            });
+        }
+
         // Apply radius filter if explicitly requested
         if ($request->has('use_radius') && $request->use_radius == 'true' 
             && $request->has('radius') && $request->has('center_lat') && $request->has('center_lng')) {
             $this->applyRadiusFilter($query, $request->center_lat, $request->center_lng, $request->radius);
+        }
+
+        // Apply confidence threshold filter
+        if ($request->has('min_confidence') && $request->min_confidence > 0) {
+            $minConfidence = (int) $request->min_confidence;
+            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence]);
+        }
+
+        // Apply period filter (date range)
+        if ($request->has('period') && $request->period !== 'all') {
+            $period = (int) $request->period;
+            $query->where('first_seen', '>=', now()->subDays($period));
+        }
+
+        // Apply custom date range filter
+        if ($request->has('date_from') && $request->has('date_to')) {
+            $query->whereBetween('first_seen', [
+                $request->date_from,
+                $request->date_to
+            ]);
         }
 
         // Get total count before pagination
@@ -107,11 +169,11 @@ class BusinessController extends Controller
             ->orderBy('category')
             ->pluck('category');
 
-        // Clean and format areas - FOCUS ON BADUNG ONLY
+        // Clean and format areas - Include all areas
         $areas = [];
         foreach ($rawAreas as $area) {
             $cleanArea = $this->cleanAreaName($area);
-            // Only include Badung areas (filter out null and non-Badung)
+            // Include all valid areas (not just Badung)
             if ($cleanArea && !in_array($cleanArea, $areas)) {
                 $areas[] = $cleanArea;
             }
@@ -203,6 +265,10 @@ class BusinessController extends Controller
         $clean = str_replace('_', ' ', $category);
         $clean = ucwords($clean);
         
+        // Handle accent characters and special cases
+        $clean = str_replace('é', 'e', $clean); // Café -> Cafe
+        $clean = str_replace('É', 'E', $clean); // É -> E
+        
         // Handle specific cases
         $mapping = [
             'Doctor' => 'Doctor',
@@ -212,6 +278,7 @@ class BusinessController extends Controller
             'Convenience Store' => 'Convenience Store',
             'Car Repair' => 'Car Repair',
             'Beauty Salon' => 'Beauty Salon',
+            'Cafe' => 'Café', // Map back to original for display
         ];
         
         return $mapping[$clean] ?? $clean;
@@ -245,7 +312,12 @@ class BusinessController extends Controller
 
         $originalCategories = [];
         foreach ($allCategories as $category) {
-            if ($this->cleanCategoryName($category) === $cleanCategory) {
+            // Case-insensitive matching with accent normalization
+            $cleanedCategory = $this->cleanCategoryName($category);
+            $normalizedClean = strtolower(str_replace(['é', 'É'], ['e', 'E'], $cleanCategory));
+            $normalizedCleaned = strtolower(str_replace(['é', 'É'], ['e', 'E'], $cleanedCategory));
+            
+            if ($normalizedCleaned === $normalizedClean) {
                 $originalCategories[] = $category;
             }
         }
@@ -428,13 +500,40 @@ class BusinessController extends Controller
     {
         $parts = array_map('trim', explode(',', $address));
 
+        // First, look for explicit "Kota" or "Kabupaten" patterns
         foreach ($parts as $part) {
             if (str_contains($part, 'Kota') || str_contains($part, 'Kabupaten')) {
                 return $part;
             }
         }
 
-        // fallback ambil part terakhir kedua
+        // Special handling for Denpasar - look for "Denpasar City" or "Denpasar" patterns
+        foreach ($parts as $part) {
+            if (str_contains($part, 'Denpasar')) {
+                // If it's "Denpasar City", return that
+                if (str_contains($part, 'Denpasar City')) {
+                    return 'Denpasar City';
+                }
+                // Otherwise return the full part (e.g., "Denpasar Utara")
+                return $part;
+            }
+        }
+
+        // Look for other specific city/kabupaten names without prefix
+        $specificAreas = [
+            'Badung', 'Tabanan', 'Gianyar', 'Klungkung', 'Bangli', 
+            'Karangasem', 'Jembrana', 'Buleleng', 'Denpasar'
+        ];
+
+        foreach ($parts as $part) {
+            foreach ($specificAreas as $area) {
+                if (stripos($part, $area) !== false) {
+                    return $part;
+                }
+            }
+        }
+
+        // Fallback: return second to last part (usually the city/area)
         return $parts[count($parts) - 2] ?? $address;
     }
 

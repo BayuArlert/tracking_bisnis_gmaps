@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use Illuminate\Http\Request;
 use App\Models\Business;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
 use Carbon\Carbon;
 
 class StatisticsController extends Controller
@@ -133,13 +134,17 @@ class StatisticsController extends Controller
         // Apply hierarchical location filters (PRIORITY) - Same logic as BusinessController
         if (!empty($kabupaten)) {
             $query->where(function($q) use ($kabupaten) {
-                // Try different formats: "Kabupaten X", "Kota X", "X" (case insensitive)
-                $q->whereRaw('LOWER(area) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kabupaten ' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%kota ' . strtolower($kabupaten) . '%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ',%'])
-                  ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kabupaten) . ' %']);
+                $kab = strtolower($kabupaten);
+                $q
+                  // Area field exact forms
+                  ->whereRaw('LOWER(area) LIKE ?', ['%kabupaten ' . $kab . '%'])
+                  ->orWhereRaw('LOWER(area) LIKE ?', ['%kota ' . $kab . '%'])
+                  // Address field - comma delimited segment or formal forms
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kabupaten ' . $kab . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kota ' . $kab . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['% ' . $kab . ' regency%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $kab . ', bali%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $kab . ', indonesia%']);
             });
         }
 
@@ -152,6 +157,19 @@ class StatisticsController extends Controller
                   ->orWhereRaw('LOWER(address) LIKE ?', ['%kec. ' . strtolower($kecamatan) . '%'])
                   ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ',%'])
                   ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ' %']);
+            });
+        }
+
+        // Add desa filter - More precise matching
+        $desa = $request->get('desa', '');
+        if (!empty($desa)) {
+            $query->where(function($q) use ($desa) {
+                // Pattern 1: ", Desa, Kec." - desa appears before kecamatan
+                $q->whereRaw('LOWER(address) LIKE ?', ['%, ' . strtolower($desa) . ', %kec.%'])
+                  // Pattern 2: ", Desa, Kecamatan" - full word kecamatan
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . strtolower($desa) . ', %kecamatan%'])
+                  // Pattern 3: End of address segment (followed by comma and capital letter)
+                  ->orWhereRaw('LOWER(address) REGEXP ?', [', ' . strtolower($desa) . ', [A-Z]']);
             });
         }
 
@@ -175,13 +193,22 @@ class StatisticsController extends Controller
             $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence]);
         }
 
-        // Get basic stats
-        $totalBusinesses = Business::count();
-        $newThisWeek = Business::where('first_seen', '>=', now()->subWeek())->count();
-        $newThisMonth = Business::where('first_seen', '>=', now()->subMonth())->count();
+        // Get basic stats - Use filtered query with caching
+        $cacheKey = 'stats_' . md5(serialize($request->all()));
+        $stats = Cache::remember($cacheKey, 300, function() use ($query) {
+            return [
+                'total' => (clone $query)->count(),
+                'new_week' => (clone $query)->where('first_seen', '>=', now()->subWeek())->count(),
+                'new_month' => (clone $query)->where('first_seen', '>=', now()->subMonth())->count(),
+            ];
+        });
         
-        // Calculate growth rate
-        $previousWeek = Business::whereBetween('first_seen', [now()->subWeeks(2), now()->subWeek()])->count();
+        $totalBusinesses = $stats['total'];
+        $newThisWeek = $stats['new_week'];
+        $newThisMonth = $stats['new_month'];
+        
+        // Calculate growth rate - Use filtered query
+        $previousWeek = (clone $query)->whereBetween('first_seen', [now()->subWeeks(2), now()->subWeek()])->count();
         $growthRate = $previousWeek > 0 ? (($newThisWeek - $previousWeek) / $previousWeek) * 100 : 0;
 
         // Get trend data
@@ -362,6 +389,19 @@ class StatisticsController extends Controller
                   ->orWhereRaw('LOWER(address) LIKE ?', ['%kec. ' . strtolower($kecamatan) . '%'])
                   ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ',%'])
                   ->orWhereRaw('LOWER(address) LIKE ?', ['%' . strtolower($kecamatan) . ' %']);
+            });
+        }
+
+        // Add desa filter - More precise matching
+        $desa = $request->get('desa', '');
+        if (!empty($desa)) {
+            $query->where(function($q) use ($desa) {
+                // Pattern 1: ", Desa, Kec." - desa appears before kecamatan
+                $q->whereRaw('LOWER(address) LIKE ?', ['%, ' . strtolower($desa) . ', %kec.%'])
+                  // Pattern 2: ", Desa, Kecamatan" - full word kecamatan
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . strtolower($desa) . ', %kecamatan%'])
+                  // Pattern 3: End of address segment (followed by comma and capital letter)
+                  ->orWhereRaw('LOWER(address) REGEXP ?', [', ' . strtolower($desa) . ', [A-Z]']);
             });
         }
 

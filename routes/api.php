@@ -69,6 +69,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
 
 // Protected routes - require authentication
+// Public routes (no authentication required)
+Route::get('/businesses/filter-options', [BusinessController::class, 'getFilterOptions']);
+
 Route::middleware('auth:sanctum')->group(function () {
     // Dashboard and statistics routes
     Route::get('/dashboard/stats', [DashboardController::class, 'stats']);
@@ -77,7 +80,6 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // Business routes
     Route::get('/businesses', [BusinessController::class, 'index']);
-    Route::get('/businesses/filter-options', [BusinessController::class, 'getFilterOptions']);
     Route::get('/businesses/update-metadata', [BusinessController::class, 'updateMetadataForExistingData']);
     Route::get('/businesses/preview-area', [BusinessController::class, 'getPreviewArea']);
     
@@ -103,7 +105,6 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/analytics/trends-per-kecamatan', [AnalyticsController::class, 'trendsPerKecamatan']);
     
     // Export routes
-    Route::get('/export/test-csv', [ExportController::class, 'testCsv']); // Test endpoint
     Route::get('/export/csv', [ExportController::class, 'csv']);
     Route::get('/export/json', [ExportController::class, 'json']);
     Route::get('/export/map-image', [ExportController::class, 'mapImage']);
@@ -112,7 +113,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Region routes (for hierarchical filters)
     Route::get('/regions/kabupaten', [RegionController::class, 'getKabupaten']);
     Route::get('/regions/kecamatan/{kabupatenName}', [RegionController::class, 'getKecamatan']);
-    Route::get('/regions/desa/{kecamatanId}', [RegionController::class, 'getDesa']);
+    Route::get('/regions/desa/{kabupaten}/{kecamatan}', [RegionController::class, 'getDesa']);
     Route::get('/regions/hierarchy', [RegionController::class, 'getHierarchy']);
     Route::get('/regions/debug-kecamatan/{kabupatenName}', [RegionController::class, 'debugKecamatan']);
     

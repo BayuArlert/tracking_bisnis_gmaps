@@ -13,7 +13,7 @@ import {
 } from "../components/ui/select";
 import Layout from "../components/Layout";
 import GoogleMapsHeatmap from "../components/GoogleMapsHeatmap";
-import MultiLineTrendChart from "../components/MultiLineTrendChart";
+import LineChart from "../components/LineChart";
 import HierarchicalLocationFilter from "../components/HierarchicalLocationFilter";
 import CategoryMultiSelect from "../components/CategoryMultiSelect";
 import ConfidenceSlider from "../components/ConfidenceSlider";
@@ -91,6 +91,7 @@ const Statistics: React.FC = () => {
   const [selectedArea, setSelectedArea] = useState<string>('all');
   const [selectedKabupaten, setSelectedKabupaten] = useState<string | null>(null);
   const [selectedKecamatan, setSelectedKecamatan] = useState<string | null>(null);
+  const [selectedDesa, setSelectedDesa] = useState<string | null>(null);
   const [confidenceThreshold, setConfidenceThreshold] = useState<number>(40); // Threshold for "new" businesses
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [businessesPerPage] = useState<number>(10);
@@ -103,6 +104,33 @@ const Statistics: React.FC = () => {
     areas: [],
     categories: [],
   });
+
+  // Display area helper: prefer specific kabupaten/kota parsed from address when area is generic "Bali"
+  const getDisplayArea = (business: any) => {
+    const areaName = cleanAreaName(business.area);
+    if (areaName === 'Bali' && business.address) {
+      const addr = business.address.toLowerCase();
+      // Try "Kabupaten X" first
+      const kabMatch = addr.match(/kabupaten\s+([a-z\s]+?)(,|$)/i);
+      if (kabMatch && kabMatch[1]) {
+        const kab = kabMatch[1].trim().replace(/\b\w/g, (l: string) => l.toUpperCase());
+        return `Kabupaten ${kab}`;
+      }
+      // Try "Kota X"
+      const kotaMatch = addr.match(/kota\s+([a-z\s]+?)(,|$)/i);
+      if (kotaMatch && kotaMatch[1]) {
+        const kota = kotaMatch[1].trim().replace(/\b\w/g, (l: string) => l.toUpperCase());
+        return `Kota ${kota}`;
+      }
+      // Try "Badung Regency" -> "Kabupaten Badung"
+      const regencyMatch = addr.match(/([a-z\s]+?)\s+regency/i);
+      if (regencyMatch && regencyMatch[1]) {
+        const reg = regencyMatch[1].trim().replace(/\b\w/g, (l: string) => l.toUpperCase());
+        return `Kabupaten ${reg}`;
+      }
+    }
+    return areaName;
+  };
 
   const fetchFilterOptions = useCallback(async () => {
     try {
@@ -130,6 +158,7 @@ const Statistics: React.FC = () => {
         categories: selectedCategories.length > 0 ? selectedCategories.join(',') : '',
         kabupaten: selectedKabupaten || '',
         kecamatan: selectedKecamatan || '',
+        desa: selectedDesa || '',
         min_confidence: confidenceThreshold.toString(),
       });
 
@@ -141,7 +170,7 @@ const Statistics: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [API, selectedPeriod, selectedCategory, selectedArea, selectedCategories, selectedKabupaten, selectedKecamatan, confidenceThreshold]);
+  }, [API, selectedPeriod, selectedCategory, selectedArea, selectedCategories, selectedKabupaten, selectedKecamatan, selectedDesa, confidenceThreshold]);
 
   const fetchHeatmapData = useCallback(async (): Promise<void> => {
     try {
@@ -152,6 +181,7 @@ const Statistics: React.FC = () => {
         area: selectedArea,
         kabupaten: selectedKabupaten || '',
         kecamatan: selectedKecamatan || '',
+        desa: selectedDesa || '',
         min_confidence: confidenceThreshold.toString(),
       });
 
@@ -163,7 +193,7 @@ const Statistics: React.FC = () => {
     } finally {
       setHeatmapLoading(false);
     }
-  }, [API, selectedPeriod, selectedCategories, selectedArea, selectedKabupaten, selectedKecamatan, confidenceThreshold]);
+  }, [API, selectedPeriod, selectedCategories, selectedArea, selectedKabupaten, selectedKecamatan, selectedDesa, confidenceThreshold]);
 
   const fetchTrendCharts = useCallback(async (): Promise<void> => {
     try {
@@ -275,7 +305,7 @@ const Statistics: React.FC = () => {
       </div>
       <div className="flex-1 min-w-0">
         <h4 className="font-semibold text-gray-900 truncate">{business.name}</h4>
-        <p className="text-sm text-gray-600 truncate">{business.category} • {cleanAreaName(business.area)}</p>
+        <p className="text-sm text-gray-600 truncate">{business.category} • {getDisplayArea(business)}</p>
         <div className="flex items-center space-x-4 text-sm mt-1">
           <span className="flex items-center text-amber-600 font-medium">
             <svg className="w-4 h-4 mr-1 fill-current" viewBox="0 0 20 20">
@@ -422,11 +452,17 @@ const Statistics: React.FC = () => {
                 <HierarchicalLocationFilter
                   kabupaten={selectedKabupaten || undefined}
                   kecamatan={selectedKecamatan || undefined}
+                  desa={selectedDesa || undefined}
                   onKabupatenChange={(value) => {
                     setSelectedKabupaten(value);
                     setSelectedKecamatan(null); // Reset kecamatan when kabupaten changes
+                    setSelectedDesa(null); // Reset desa when kabupaten changes
                   }}
-                  onKecamatanChange={(value) => setSelectedKecamatan(value)}
+                  onKecamatanChange={(value) => {
+                    setSelectedKecamatan(value);
+                    setSelectedDesa(null); // Reset desa when kecamatan changes
+                  }}
+                  onDesaChange={(value) => setSelectedDesa(value)}
                 />
               </div>
 
@@ -506,19 +542,27 @@ const Statistics: React.FC = () => {
         </Card>
 
 
-        {/* Charts Section - Multi-line Charts seperti yang diminta */}
+        {/* Chart.js Line Charts - Professional and Accurate */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
-          <MultiLineTrendChart
+          <LineChart
             data={categoryTrends.trends}
             lines={categoryTrends.categories}
             title="Tren Mingguan Penambahan per Kategori"
-            type="category"
+            height={450}
+            showGrid={true}
+            showLegend={true}
+            showTooltips={true}
+            animated={true}
           />
-          <MultiLineTrendChart
+          <LineChart
             data={kecamatanTrends.trends}
             lines={kecamatanTrends.kecamatan}
             title="Tren Mingguan per Kecamatan (Top 5)"
-            type="kecamatan"
+            height={450}
+            showGrid={true}
+            showLegend={true}
+            showTooltips={true}
+            animated={true}
           />
         </div>
 
