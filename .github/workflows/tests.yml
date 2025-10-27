@@ -37,14 +37,34 @@ jobs:
       - name: Install Dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
-      - name: Copy Environment File
-        run: cp .env.example .env
+      - name: Setup Environment
+        run: |
+          touch database/database.sqlite
+          if [ -f .env.example ]; then
+            cp .env.example .env
+          else
+            echo "APP_NAME=Laravel" > .env
+            echo "APP_ENV=testing" >> .env
+            echo "APP_KEY=" >> .env
+            echo "APP_DEBUG=true" >> .env
+            echo "APP_URL=http://localhost" >> .env
+            echo "DB_CONNECTION=sqlite" >> .env
+            echo "DB_DATABASE=$(pwd)/database/database.sqlite" >> .env
+            echo "CACHE_STORE=array" >> .env
+            echo "QUEUE_CONNECTION=sync" >> .env
+            echo "SESSION_DRIVER=array" >> .env
+            echo "SESSION_LIFETIME=120" >> .env
+            echo "MAIL_MAILER=array" >> .env
+          fi
 
       - name: Generate Application Key
         run: php artisan key:generate
 
+      - name: Run Database Migrations
+        run: php artisan migrate --force
+
       - name: Build Assets
         run: npm run build
 
-      - name: Tests
-        run: ./vendor/bin/phpunit
+      - name: Run Tests
+        run: php artisan test
