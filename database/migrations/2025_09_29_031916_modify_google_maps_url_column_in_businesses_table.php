@@ -12,8 +12,17 @@ return new class extends Migration
      */
     public function up(): void
     {
-        // Avoid using change() to prevent doctrine/dbal requirement in production
-        DB::statement('ALTER TABLE businesses MODIFY COLUMN google_maps_url TEXT NULL');
+        // SQLite doesn't support MODIFY COLUMN, use fallback approach
+        if (DB::getDriverName() === 'sqlite') {
+            // SQLite: Rename -> Add new -> Copy -> Drop old
+            DB::statement('ALTER TABLE businesses RENAME COLUMN google_maps_url TO google_maps_url_old');
+            DB::statement('ALTER TABLE businesses ADD COLUMN google_maps_url TEXT NULL');
+            DB::statement('UPDATE businesses SET google_maps_url = google_maps_url_old');
+            DB::statement('ALTER TABLE businesses DROP COLUMN google_maps_url_old');
+        } else {
+            // MySQL/MariaDB: Use MODIFY
+            DB::statement('ALTER TABLE businesses MODIFY COLUMN google_maps_url TEXT NULL');
+        }
     }
 
     /**
@@ -21,6 +30,13 @@ return new class extends Migration
      */
     public function down(): void
     {
-        DB::statement('ALTER TABLE businesses MODIFY COLUMN google_maps_url VARCHAR(255) NULL');
+        if (DB::getDriverName() === 'sqlite') {
+            DB::statement('ALTER TABLE businesses RENAME COLUMN google_maps_url TO google_maps_url_old');
+            DB::statement('ALTER TABLE businesses ADD COLUMN google_maps_url VARCHAR(255) NULL');
+            DB::statement('UPDATE businesses SET google_maps_url = google_maps_url_old');
+            DB::statement('ALTER TABLE businesses DROP COLUMN google_maps_url_old');
+        } else {
+            DB::statement('ALTER TABLE businesses MODIFY COLUMN google_maps_url VARCHAR(255) NULL');
+        }
     }
 };
