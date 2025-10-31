@@ -101,32 +101,27 @@ class BaliRegionSeeder extends Seeder
             ['name' => 'Jembrana - Mendoyo', 'center_lat' => -8.400000, 'center_lng' => 114.683333, 'search_radius' => 8000, 'priority' => 9],
         ];
         
-        // Gabungkan semua zones
-        $kabupaten = array_merge(
-            $badungZones,
-            $denpasarZones,
-            $gianyarZones,
-            $tabananZones,
-            $bulelengZones,
-            $klungkungZones,
-            $bangliZones,
-            $karangasemZones,
-            $jembranaZones
-        );
+        // Pastikan entri kabupaten master tersedia dengan nama persis (Badung, Denpasar, ...)
+        $kabupatenMaster = [
+            'Badung',
+            'Denpasar',
+            'Gianyar',
+            'Tabanan',
+            'Buleleng',
+            'Klungkung',
+            'Bangli',
+            'Karangasem',
+            'Jembrana',
+        ];
 
-        foreach ($kabupaten as $data) {
-            BaliRegion::create([
-                'type' => 'kabupaten',
-                'name' => $data['name'],
-                'parent_id' => null,
-                'center_lat' => $data['center_lat'],
-                'center_lng' => $data['center_lng'],
-                'search_radius' => $data['search_radius'],
-                'priority' => $data['priority'],
-            ]);
+        foreach ($kabupatenMaster as $kab) {
+            BaliRegion::firstOrCreate(
+                ['type' => 'kabupaten', 'name' => $kab, 'parent_id' => null],
+                ['priority' => 1]
+            );
         }
 
-        // Get kabupaten IDs for creating kecamatan
+        // Get kabupaten IDs for creating kecamatan with expected keys
         $kabupatenIds = BaliRegion::where('type', 'kabupaten')->pluck('id', 'name');
 
         // Kecamatan untuk setiap kabupaten (sample - bisa ditambah lebih lengkap)

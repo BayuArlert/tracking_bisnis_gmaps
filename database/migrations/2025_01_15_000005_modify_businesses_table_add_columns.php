@@ -11,6 +11,11 @@ return new class extends Migration
      */
     public function up(): void
     {
+        // Check if businesses table exists
+        if (!Schema::hasTable('businesses')) {
+            return;
+        }
+
         Schema::table('businesses', function (Blueprint $table) {
             // Kolom tambahan yang diperlukan
             $table->json('types')->nullable()->after('category'); // menyimpan semua types dari Google Places

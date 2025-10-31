@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
@@ -11,9 +12,8 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('businesses', function (Blueprint $table) {
-            $table->dateTime('first_seen')->change();
-        });
+        // Avoid using change() to prevent doctrine/dbal requirement in production
+        DB::statement('ALTER TABLE businesses MODIFY COLUMN first_seen DATETIME');
     }
 
     /**
@@ -21,8 +21,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('businesses', function (Blueprint $table) {
-            $table->date('first_seen')->change();
-        });
+        DB::statement('ALTER TABLE businesses MODIFY COLUMN first_seen DATE');
     }
 };

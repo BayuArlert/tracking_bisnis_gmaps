@@ -55,6 +55,29 @@ class AnalyticsController extends Controller
     }
 
     /**
+     * Apply flexible area match: match by exact original areas OR by address heuristics
+     */
+    private function applyAreaMatch($query, string $cleanArea, array $originalAreas): void
+    {
+        $query->where(function($q) use ($cleanArea, $originalAreas) {
+            if (!empty($originalAreas)) {
+                $q->whereIn('area', $originalAreas);
+            }
+
+            // Derive base name (remove prefixes) e.g., "Kabupaten Badung" -> "badung"
+            $base = strtolower(trim(preg_replace('/^(kabupaten|kota)\s+/i', '', $cleanArea)));
+            if ($base !== '') {
+                $q->orWhereRaw('LOWER(area) LIKE ?', ['%' . $base . '%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kabupaten ' . $base . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, kota ' . $base . ',%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['% ' . $base . ' regency%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $base . ', bali%'])
+                  ->orWhereRaw('LOWER(address) LIKE ?', ['%, ' . $base . ', indonesia%']);
+            }
+        });
+    }
+
+    /**
      * Apply hierarchical location filters (kabupaten, kecamatan, desa)
      */
     private function applyLocationFilters($query, Request $request)
@@ -318,7 +341,19 @@ class AnalyticsController extends Controller
         
         // Fixed order of categories to ensure consistent color mapping
         $categories = ['Café', 'Restoran', 'Sekolah', 'Villa', 'Hotel', 'Popular Spot', 'Lainnya'];
-        
+
+        // Map API categories to database categories (handle case differences)
+        // Define BEFORE using it below
+        $categoryMapping = [
+            'Café' => ['cafe', 'Café', 'CAFE'],
+            'Restoran' => ['Restoran', 'restoran', 'RESTORAN', 'restaurant'],
+            'Sekolah' => ['Sekolah', 'sekolah', 'SEKOLAH', 'school', 'university'],
+            'Villa' => ['Villa', 'villa', 'VILLA'],
+            'Hotel' => ['Hotel', 'hotel', 'HOTEL', 'lodging', 'resort'],
+            'Popular Spot' => ['Popular Spot', 'popular spot', 'POPULAR SPOT', 'beach', 'pantai', 'temple', 'pura', 'waterfall'],
+            'Lainnya' => ['Lainnya', 'lainnya', 'LAINNYA', 'bar', 'bakery', 'gym', 'spa', 'coworking', 'mall', 'club']
+        ];
+
         // Filter categories to only show those with data in the time period
         $categoriesWithData = [];
         foreach ($categories as $category) {
@@ -334,16 +369,6 @@ class AnalyticsController extends Controller
         // Use categories with data, fallback to all if none found
         $categories = !empty($categoriesWithData) ? $categoriesWithData : $categories;
         
-        // Map API categories to database categories (handle case differences)
-        $categoryMapping = [
-            'Café' => ['cafe', 'Café', 'CAFE'],
-            'Restoran' => ['Restoran', 'restoran', 'RESTORAN'],
-            'Sekolah' => ['Sekolah', 'sekolah', 'SEKOLAH'],
-            'Villa' => ['Villa', 'villa', 'VILLA'],
-            'Hotel' => ['Hotel', 'hotel', 'HOTEL'],
-            'Popular Spot' => ['Popular Spot', 'popular spot', 'POPULAR SPOT'],
-            'Lainnya' => ['Lainnya', 'lainnya', 'LAINNYA', 'bar', 'bakery']
-        ];
         $trendsData = [];
 
         if ($period === 'weekly') {
@@ -473,12 +498,11 @@ class AnalyticsController extends Controller
                 foreach ($topKecamatan as $kecamatan) {
                     // Get all original area names that match this cleaned area
                     $originalAreas = $this->getOriginalAreaNames($kecamatan);
+
+                    $query = Business::whereBetween('first_seen', [$startDate, $endDate]);
+                    $this->applyAreaMatch($query, $kecamatan, $originalAreas);
                     
-                    $count = Business::whereBetween('first_seen', [$startDate, $endDate])
-                        ->whereIn('area', $originalAreas)
-                        ->count();
-                    
-                    $weekData[$kecamatan] = $count;
+                    $weekData[$kecamatan] = $query->count();
                 }
                 
                 $trendsData[] = $weekData;
@@ -496,12 +520,11 @@ class AnalyticsController extends Controller
                 foreach ($topKecamatan as $kecamatan) {
                     // Get all original area names that match this cleaned area
                     $originalAreas = $this->getOriginalAreaNames($kecamatan);
-                    
-                    $count = Business::whereBetween('first_seen', [$startDate, $endDate])
-                        ->whereIn('area', $originalAreas)
-                        ->count();
-                    
-                    $monthData[$kecamatan] = $count;
+
+                    $query = Business::whereBetween('first_seen', [$startDate, $endDate]);
+                    $this->applyAreaMatch($query, $kecamatan, $originalAreas);
+
+                    $monthData[$kecamatan] = $query->count();
                 }
                 
                 $trendsData[] = $monthData;

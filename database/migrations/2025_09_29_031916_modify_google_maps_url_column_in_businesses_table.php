@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Facades\DB;
 
 return new class extends Migration
 {
@@ -11,9 +12,8 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::table('businesses', function (Blueprint $table) {
-            $table->text('google_maps_url')->nullable()->change();
-        });
+        // Avoid using change() to prevent doctrine/dbal requirement in production
+        DB::statement('ALTER TABLE businesses MODIFY COLUMN google_maps_url TEXT NULL');
     }
 
     /**
@@ -21,8 +21,6 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::table('businesses', function (Blueprint $table) {
-            $table->string('google_maps_url')->nullable()->change();
-        });
+        DB::statement('ALTER TABLE businesses MODIFY COLUMN google_maps_url VARCHAR(255) NULL');
     }
 };

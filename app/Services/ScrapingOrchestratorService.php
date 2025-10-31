@@ -1348,21 +1348,45 @@ class ScrapingOrchestratorService
     private function extractAreaFromAddress(string $address): ?string
     {
         $parts = array_map('trim', explode(',', $address));
-        
-        // Look for specific Bali areas
-        $baliAreas = [
-            'Denpasar', 'Badung', 'Gianyar', 'Tabanan', 'Klungkung', 'Bangli', 'Karangasem', 'Buleleng', 'Jembrana'
+
+        // Normalization targets
+        $areas = [
+            'Denpasar' => 'Kota Denpasar',
+            'Badung' => 'Kabupaten Badung',
+            'Gianyar' => 'Kabupaten Gianyar',
+            'Tabanan' => 'Kabupaten Tabanan',
+            'Klungkung' => 'Kabupaten Klungkung',
+            'Bangli' => 'Kabupaten Bangli',
+            'Karangasem' => 'Kabupaten Karangasem',
+            'Buleleng' => 'Kabupaten Buleleng',
+            'Jembrana' => 'Kabupaten Jembrana',
+        ];
+
+        // Regex patterns to tolerate variants: Regency/City, lower/upper, prefixes
+        $patterns = [
+            'kabupaten' => '/^(kabupaten\s+)?%s(\s+regency)?$/i',
+            'kota' => '/^(kota\s+)?%s(\s+city)?$/i',
+            'loose' => '/.*%s.*/i'
         ];
 
         foreach ($parts as $part) {
-            foreach ($baliAreas as $area) {
-                if (stripos($part, $area) !== false) {
-                    return $area;
+            $p = trim(preg_replace('/\s+\d+/', '', $part));
+            foreach ($areas as $key => $standard) {
+                $escaped = preg_quote($key, '/');
+                if (preg_match(sprintf($patterns['kabupaten'], $escaped), $p)
+                    || preg_match(sprintf($patterns['kota'], $escaped), $p)
+                    || preg_match(sprintf($patterns['loose'], $escaped), $p)) {
+                    return $standard;
                 }
             }
         }
-        
-        return 'Bali';
+
+        // Fallback: if address contains "Bali", return 'Bali'
+        if (stripos($address, 'bali') !== false) {
+            return 'Bali';
+        }
+
+        return null;
     }
 
     /**

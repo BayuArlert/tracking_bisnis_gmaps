@@ -190,7 +190,7 @@ class StatisticsController extends Controller
 
         // Apply confidence threshold filter
         if ($minConfidence > 0) {
-            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence]);
+            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence / 100]);
         }
 
         // Get basic stats - Use filtered query with caching
@@ -422,7 +422,7 @@ class StatisticsController extends Controller
 
         // Apply confidence threshold filter
         if ($minConfidence > 0) {
-            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence]);
+            $query->whereRaw('JSON_EXTRACT(indicators, "$.new_business_confidence") >= ?', [$minConfidence / 100]);
         }
 
         // Apply time filter (only if period is not 'all')
